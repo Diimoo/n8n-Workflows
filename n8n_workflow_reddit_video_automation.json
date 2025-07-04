@@ -1,0 +1,669 @@
+{
+  "name": "Reddit to Social Video Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Workflow: Reddit Post to Social Media Video\n\n**Ziel:** Automatische Erstellung von Kurzvideos aus Reddit-Posts für Social Media.\n\n**Wichtige Hinweise zur Fehlerbehandlung & Logging:**\n1.  **Globaler Error Trigger:** Es wird empfohlen, am Anfang dieses Workflows einen `Error Trigger` Node zu platzieren. Dieser kann einen separaten Workflow starten, um Fehler global zu behandeln (z.B. Benachrichtigung senden, Fehler loggen).\n2.  **Execute Command Nodes:** Die Skripte in diesen Nodes nutzen `echo '...' >&2` für Logging ins n8n Execution Log und `exit 1` bei Fehlern, um den Node fehlschlagen zu lassen.\n3.  **HTTP Request Nodes:** Für Nodes wie Ollama, YouTube, TikTok und Instagram sollte die Option `Continue on Fail` (im n8n Editor) geprüft werden. Nachfolgende `IF` Nodes können dann `$responseCode` und Fehler in der Antwort prüfen, um spezifisch zu reagieren.\n4.  **Anpassung:** Dieser Workflow ist ein Template. Pfade, Befehle, API-Keys und Logik müssen an die eigene Umgebung angepasst werden."
+      },
+      "name": "Workflow Instructions & Error Handling Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        50,
+        50
+      ],
+      "color": {
+        "r": 255,
+        "g": 200,
+        "b": 0
+      }
+    },
+    {
+      "parameters": {},
+      "name": "Start",
+      "type": "n8n-nodes-base.start",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $parameter.subredditUrl || 'https://www.reddit.com/r/AmItheAsshole/hot.json?limit=100' }}", // Allow overriding via parameters
+        "responseFormat": "json",
+        "options": {
+          "splitIntoItems": true, // Process each post individually
+          "response": {
+            "response": {
+              "json": {
+                "pathToItems": "data.children" // Path to the array of posts
+              }
+            }
+          }
+        }
+      },
+      "name": "1. Reddit Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        450,
+        300
+      ],
+      "notes": "Input: Trigger (manual or scheduled). Can use workflow parameter 'subredditUrl'.\nOutput: Individual JSON objects for each post under 'data.children'.\nExample for one item (output by the node):\n{\n  \"kind\": \"t3\",\n  \"data\": {\n    \"title\": \"AITA for...\",\n    \"selftext\": \"Long story...\",\n    \"score\": 2500,\n    \"num_comments\": 150,\n    \"over_18\": false,\n    \"is_self\": true // Important to check if it's a text post\n    // ... other reddit fields\n  }\n}"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "combineOperation": "all" // All conditions must be true
+          },
+          "conditions": [
+            {
+              "value1": "={{ $json.data.selftext }}", // Check if selftext is not empty
+              "operation": "isNotEmpty"
+            },
+            {
+              "value1": "={{ $json.data.is_self }}", // Ensure it's a text post
+              "operation": "boolean",
+              "value2": true
+            },
+            {
+              "value1": "={{ $json.data.over_18 }}", // Exclude NSFW posts (optional, can be configured)
+              "operation": "boolean",
+              "value2": false
+            },
+            {
+              "value1": "={{ $json.data.selftext.split(' ').length }}",
+              "operation": "largerEqual",
+              "value2": "={{ $parameter.minWords || 300 }}" // Use parameter or default
+            },
+            {
+              "value1": "={{ $json.data.selftext.split(' ').length }}",
+              "operation": "smallerEqual",
+              "value2": "={{ $parameter.maxWords || 500 }}" // Use parameter or default
+            },
+            {
+              "value1": "={{ $json.data.score }}",
+              "operation": "largerEqual",
+              "value2": "={{ $parameter.minUpvotes || 1000 }}" // Use parameter or default
+            },
+            {
+              "value1": "={{ $json.data.num_comments }}",
+              "operation": "largerEqual",
+              "value2": "={{ $parameter.minComments || 50 }}" // Use parameter or default
+            }
+          ]
+        },
+        "options": {} // process all items, IF node will pass through matching items
+      },
+      "name": "2. Filter Posts",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2, // Updated to version 2 for better conditions UI
+      "position": [
+        650,
+        300
+      ],
+      "notes": "Input: Individual JSON post objects from '1. Reddit Scraper'.\n- $json.data.selftext: String\n- $json.data.score: Number\n- $json.data.num_comments: Number\n- $json.data.is_self: Boolean\n- $json.data.over_18: Boolean\nWorkflow parameters can be used for thresholds: minWords, maxWords, minUpvotes, minComments.\nOutput: Only JSON objects of posts that match ALL criteria."
+    },
+    {
+      "parameters": {
+        "options": {
+          "mode": "first" // We only want the first (best) post that passed the filter
+        }
+      },
+      "name": "2a. Select First Matching Post",
+      "type": "n8n-nodes-base.items",
+      "typeVersion": 1,
+      "position": [
+        750,
+        180 // Positioned to take the true output from the IF node
+      ],
+      "notes": "Input: Items that passed the '2. Filter Posts' IF node.\nOutput: Only the very first item that matched the criteria. This ensures we process only one post."
+    },
+    {
+      "parameters": {
+        "url": "={{ $parameter.ollamaApiUrl || 'http://localhost:11434/api/generate' }}",
+        "sendBody": true,
+        "requestMethod": "POST",
+        "contentType": "application/json",
+        "bodyParameters": "={{ JSON.stringify({\n  model: $parameter.ollamaModel || 'mistral',\n  prompt: `Schreibe den folgenden Reddit-Post so um, dass er dieselbe Geschichte erzählt, aber emotionaler, spannender und idealerweise zwischen 500 und 700 Wörtern lang ist. Der Stil sollte erzählend sein und das ursprüngliche Ende beibehalten werden. Gib NUR den umgeschriebenen Text zurück, ohne zusätzliche Einleitungen, Kommentare oder Verabschiedungen vor oder nach der Geschichte.\\n\\nOriginal Post:\\n---\\n${$json.data.selftext}\\n---\\nUmschreibung: `,\n  stream: false,\n  options: {\n    num_ctx: $parameter.ollamaNumCtx || 4096, // Context window size, adjust as needed\n    temperature: $parameter.ollamaTemperature || 0.7 // Creativity vs. determinism\n  }\n}) }}",
+        "responseFormat": "json",
+        "options": {}
+      },
+      "name": "3. LLM Text Optimierung (Ollama)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        950, // Adjusted position due to new node 2a
+        180
+      ],
+      "notes": "Input: JSON from '2a. Select First Matching Post'.\n- $json.data.selftext: String (original Reddit post text)\nWorkflow Parameters for configuration:\n- ollamaApiUrl: URL of your Ollama API (e.g., http://host.docker.internal:11434/api/generate if n8n is in Docker)\n- ollamaModel: Name of the Ollama model (e.g., 'mistral', 'mistral:7b-instruct-q5_K_M')\n- ollamaNumCtx: Context window size for Ollama.\n- ollamaTemperature: Temperature for LLM generation.\nOutput: JSON from Ollama. The optimized text is in `$json.response`.\nExample Output:\n{\n  \"model\": \"mistral\",\n  \"created_at\": \"2023-12-07T10:00:00.000Z\",\n  \"response\": \"Der emotional aufbereitete und längere Text der Geschichte...\",\n  \"done\": true,\n  \"total_duration\": 5026658708,\n  \"load_duration\": 263250,\n  \"prompt_eval_count\": 281,\n  \"prompt_eval_duration\": 182938000,\n  \"eval_count\": 290,\n  \"eval_duration\": 4839494000\n}"
+    },
+    {
+      "parameters": {
+        "command": "#!/bin/bash\n# This script executes a local TTS command and outputs the path to the audio file.\n# Adapt this script to your specific TTS engine and setup.\n\nOPTIMIZED_TEXT=\"{{ $json.optimizedText || 'Default text if not provided.' }}\"\n# Define output path. Ensure this directory is accessible by n8n and subsequent FFmpeg commands.\n# Using /tmp/ is often easiest for transient files if n8n runs in Docker and /tmp is shared or accessible.\n# Otherwise, use a mapped volume like /n8n_data/\nOUTPUT_FILENAME=\"tts_audio_$(date +%s).wav\" # Unique filename\nOUTPUT_PATH=\"/tmp/$OUTPUT_FILENAME\" # Or /n8n_data/$OUTPUT_FILENAME\n\n# Voice selection (examples, adapt to your TTS engine)\nTTS_VOICE_PRESET_FEMALE=\"v2/en_speaker_6\" # Example for Bark: calm female\nTTS_VOICE_PRESET_MALE=\"v2/en_speaker_9\"   # Example for Bark: more dramatic male\nSELECTED_VOICE=\"{{ $parameter.ttsVoice || 'female' }}\" # Workflow parameter: 'female', 'male', or specific preset name\n\nTTS_ENGINE=\"{{ $parameter.ttsEngine || 'bark' }}\" # Workflow parameter: 'bark', 'xtts', 'tortoise'\n\n# Escape quotes in the text for the command line\nESCAPED_TEXT=$(echo \"$OPTIMIZED_TEXT\" | sed \"s/'/\\\\'/g\" | sed 's/\"/\\\\\"/g')\n\necho \"Generating TTS for text: $ESCAPED_TEXT\" >&2 # Log to stderr for n8n execution log\necho \"Selected voice preset: $SELECTED_VOICE, Engine: $TTS_ENGINE\" >&2\n\nif [ \"$TTS_ENGINE\" == \"bark\" ]; then\n  VOICE_TO_USE=$TTS_VOICE_PRESET_FEMALE\n  if [ \"$SELECTED_VOICE\" == \"male\" ]; then\n    VOICE_TO_USE=$TTS_VOICE_PRESET_MALE\n  elif [[ \"$SELECTED_VOICE\" == \"v2/\"* ]]; then # Allow passing full preset name\n    VOICE_TO_USE=$SELECTED_VOICE\n  fi\n  echo \"Using Bark voice: $VOICE_TO_USE\" >&2\n  # Ensure 'bark' command is in PATH or use full path. Adjust parameters as needed.\n  # bark --text \"$ESCAPED_TEXT\" --output_path \"$OUTPUT_PATH\" --voice_preset \"$VOICE_TO_USE\"\n  # Placeholder - replace with your actual bark command:\n  echo \"This is a Bark simulation for '$ESCAPED_TEXT' with voice $VOICE_TO_USE.\" > \"$OUTPUT_PATH\"\n  if [ $? -ne 0 ]; then echo \"Bark TTS command failed\" >&2; exit 1; fi\nelif [ \"$TTS_ENGINE\" == \"xtts\" ]; then\n  # Example for Coqui XTTS server (if you run one via API)\n  # Ensure jq is installed if you use it here.\n  # API_URL=\"{{ $parameter.xttsApiUrl || 'http://localhost:8020/tts_to_audio/' }}\"\n  # SPEAKER_WAV_PATH=\"{{ $parameter.xttsSpeakerWav || '/path/to/your/speaker.wav' }}\" # Path to a reference voice for XTTS\n  # LANGUAGE_CODE=\"{{ $parameter.xttsLanguage || 'en' }}\"\n  # curl -s -X POST -H \"Content-Type: application/json\" \\\n  #   -d \"{\\\"text\\\": \\\"$ESCAPED_TEXT\\\", \\\"speaker_wav\\\": \\\"$SPEAKER_WAV_PATH\\\", \\\"language\\\": \\\"$LANGUAGE_CODE\\\"}\" \\\n  #   \"$API_URL\" > \"$OUTPUT_PATH\"\n  # Placeholder for XTTS CLI or other method:\n  echo \"This is an XTTS simulation for '$ESCAPED_TEXT'.\" > \"$OUTPUT_PATH\"\n  if [ $? -ne 0 ]; then echo \"XTTS command failed\" >&2; exit 1; fi\nelse\n  echo \"Unsupported TTS Engine: $TTS_ENGINE\" >&2\n  exit 1\nfi\n\necho \"TTS audio generated at: $OUTPUT_PATH\" >&2\n# The last line (stdout) of the script MUST be the path to the generated file.\necho \"$OUTPUT_PATH\"",
+        "options": {
+          "shell": true, // Execute with bash
+          "output": "string", // Expect a string (the file path) as output
+          "executionTimeout": 300 // Timeout in seconds, adjust based on typical TTS generation time
+        }
+      },
+      "name": "4. Text-to-Speech (TTS)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 2.1,
+      "position": [
+        1350, // Adjusted position
+        180
+      ],
+      "notes": "Input: JSON from '3a. Extract Optimized Text'.\n- $json.optimizedText: String (the text to synthesize)\nWorkflow Parameters for configuration:\n- ttsEngine: 'bark', 'xtts', 'tortoise' (selects the TTS engine logic in the script)\n- ttsVoice: 'female', 'male', or a specific voice/preset name for the chosen engine (e.g., 'v2/en_speaker_6' for Bark).\n- (Optional) xttsApiUrl: URL for XTTS API if used.\n- (Optional) xttsSpeakerWav: Path to speaker WAV for XTTS.\n- (Optional) xttsLanguage: Language code for XTTS.\nCommand: Executes a bash script that calls the selected local TTS engine.\n  - The script takes the optimized text and voice selection parameters.\n  - It generates a .wav or .mp3 file (e.g., in /tmp/ or a mapped /n8n_data/ volume).\n  - **IMPORTANT**: The script *must* be adapted with your actual TTS command-line calls and paths.\n  - The placeholder commands currently just create dummy files.\nOutput: String - the absolute path to the generated audio file.\nExample output: \"/tmp/tts_audio_1678886400.wav\""
+    },
+    {
+        "parameters": {
+            "command": "#!/bin/bash\n# This script cuts a segment from a stock video based on TTS audio duration.\n# Requires ffprobe and ffmpeg to be installed and in PATH.\n\nTTS_AUDIO_PATH=\"{{ $json.ttsAudioPath || '/tmp/dummy_audio_for_video_cut.wav' }}\"\nSTOCK_VIDEO_URL_OR_PATH=\"{{ $parameter.stockVideoPathOrUrl || 'https://videos.pexels.com/video-files/3873428/3873428-hd_1280_720_25fps.mp4' }}\"\nOUTPUT_FILENAME=\"video_segment_$(date +%s).mp4\"\nOUTPUT_VIDEO_SEGMENT_PATH=\"/tmp/$OUTPUT_FILENAME\" # Or /n8n_data/$OUTPUT_FILENAME\n\necho \"Preparing to cut video segment.\" >&2\necho \"TTS Audio Path: $TTS_AUDIO_PATH\" >&2\necho \"Stock Video Source: $STOCK_VIDEO_URL_OR_PATH\" >&2\n\n# Create a dummy audio file if the provided path is the default dummy one (for testing this node standalone)\nif [ \"$TTS_AUDIO_PATH\" == \"/tmp/dummy_audio_for_video_cut.wav\" ] && [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n  echo \"Creating dummy audio file for testing duration calculation.\" >&2\n  ffmpeg -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 5 -c:a pcm_s16le \"$TTS_AUDIO_PATH\" > /dev/null 2>&1\nfi\n\nif [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n  echo \"Error: TTS audio file not found at $TTS_AUDIO_PATH\" >&2\n  exit 1\nfi\n\n# 1. Get audio duration using ffprobe\nAUDIO_DURATION_SECONDS=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"$TTS_AUDIO_PATH\")\nif [ -z \"$AUDIO_DURATION_SECONDS\" ]; then\n  echo \"Error: Could not get duration of audio file: $TTS_AUDIO_PATH\" >&2\n  exit 1\nfi\necho \"Audio Duration: $AUDIO_DURATION_SECONDS seconds\" >&2\n\n# 2. Get stock video duration using ffprobe\nSTOCK_VIDEO_DURATION_SECONDS=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"$STOCK_VIDEO_URL_OR_PATH\")\nif [ -z \"$STOCK_VIDEO_DURATION_SECONDS\" ]; then\n  echo \"Error: Could not get duration of stock video: $STOCK_VIDEO_URL_OR_PATH\" >&2\n  # Attempt to download if it's a URL and ffprobe failed (e.g. direct probing of URL not supported by build)\n  if [[ \"$STOCK_VIDEO_URL_OR_PATH\" == http* ]]; then\n    echo \"Attempting to download stock video to determine duration...\" >&2\n    TEMP_STOCK_VIDEO=\"/tmp/temp_stock_video_$(date +%s).mp4\"\n    curl -L -s -o \"$TEMP_STOCK_VIDEO\" \"$STOCK_VIDEO_URL_OR_PATH\"\n    if [ $? -ne 0 ] || [ ! -s \"$TEMP_STOCK_VIDEO\" ]; then echo \"Failed to download stock video.\" >&2; rm -f \"$TEMP_STOCK_VIDEO\"; exit 1; fi\n    STOCK_VIDEO_DURATION_SECONDS=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"$TEMP_STOCK_VIDEO\")\n    STOCK_VIDEO_URL_OR_PATH=\"$TEMP_STOCK_VIDEO\" # Use local copy for cutting\n    # Note: This temporary video should be cleaned up if not used as input for the cut directly.\n    # For simplicity, if downloaded, we use it as input for ffmpeg cut and it can be removed later by OS or manually.\n  else \n    exit 1\n  fi\n  if [ -z \"$STOCK_VIDEO_DURATION_SECONDS\" ]; then echo \"Still could not get duration of stock video.\" >&2; exit 1; fi\nfi\necho \"Stock Video Duration: $STOCK_VIDEO_DURATION_SECONDS seconds\" >&2\n\n# Convert durations to integers (floor) for calculations\nAUDIO_DURATION_INT=$(printf \"%.0f\" \"$AUDIO_DURATION_SECONDS\")\nSTOCK_VIDEO_DURATION_INT=$(printf \"%.0f\" \"$STOCK_VIDEO_DURATION_SECONDS\")\n\nif [ \"$AUDIO_DURATION_INT\" -ge \"$STOCK_VIDEO_DURATION_INT\" ]; then\n  echo \"Error: Audio duration ($AUDIO_DURATION_INT s) is longer than or equal to stock video duration ($STOCK_VIDEO_DURATION_INT s). Cannot cut.\" >&2\n  # As a fallback, use the full stock video if it's shorter than audio, or trim audio later.\n  # For now, we'll just use the stock video as is IF it's shorter, otherwise error.\n  if [ \"$STOCK_VIDEO_DURATION_INT\" -lt \"$AUDIO_DURATION_INT\" ]; then \n    echo \"Warning: Audio is longer than stock video. Using full stock video for now.\" >&2\n    ffmpeg -i \"$STOCK_VIDEO_URL_OR_PATH\" -c copy -y \"$OUTPUT_VIDEO_SEGMENT_PATH\"\n    if [ $? -ne 0 ]; then echo \"FFmpeg command failed to copy full stock video.\" >&2; exit 1; fi\n    echo \"$OUTPUT_VIDEO_SEGMENT_PATH\"\n    exit 0\n  fi\n  exit 1\nfi\n\nMAX_START_TIME=$((STOCK_VIDEO_DURATION_INT - AUDIO_DURATION_INT))\nif [ \"$MAX_START_TIME\" -lt 0 ]; then MAX_START_TIME=0; fi\n\nRANDOM_START_SECONDS=$(shuf -i 0-\"$MAX_START_TIME\" -n 1)\necho \"Random Start Time for Cut: $RANDOM_START_SECONDS seconds\" >&2\n\n# 3. Cut video using ffmpeg\n# -y overwrites output file without asking\n# -an removes audio from the segment (we'll add our TTS later)\n# -c:v copy attempts to stream copy to avoid re-encoding (faster, preserves quality)\n# If stream copy fails (e.g. due to format issues or needing filters), \n# you might need to specify a codec e.g. -c:v libx264\nffmpeg -ss \"$RANDOM_START_SECONDS\" -i \"$STOCK_VIDEO_URL_OR_PATH\" -t \"$AUDIO_DURATION_SECONDS\" -c:v copy -an -y \"$OUTPUT_VIDEO_SEGMENT_PATH\"\n\nif [ $? -ne 0 ]; then\n  echo \"FFmpeg stream copy command failed. Attempting re-encode with libx264.\" >&2\n  ffmpeg -ss \"$RANDOM_START_SECONDS\" -i \"$STOCK_VIDEO_URL_OR_PATH\" -t \"$AUDIO_DURATION_SECONDS\" -c:v libx264 -preset medium -an -y \"$OUTPUT_VIDEO_SEGMENT_PATH\"\n  if [ $? -ne 0 ]; then echo \"FFmpeg re-encode command also failed.\" >&2; exit 1; fi\nfi\n\necho \"Video segment created at: $OUTPUT_VIDEO_SEGMENT_PATH\" >&2\n# The last line (stdout) of the script MUST be the path to the generated file.\necho \"$OUTPUT_VIDEO_SEGMENT_PATH\"",
+            "options": {
+                "shell": true, // Execute with bash
+                "output": "string", // Expect a string (the file path) as output
+                "executionTimeout": 600 // Timeout in seconds, adjust for potentially long downloads/cuts
+            }
+        },
+        "name": "5. Cut Stock Video (FFmpeg)",
+        "type": "n8n-nodes-base.executeCommand",
+        "typeVersion": 2.1,
+        "position": [
+            1750, // Adjusted position
+            180
+        ],
+        "notes": "Input: JSON from '4a. Set TTS Output Path'.\n- $json.ttsAudioPath: String (path to the TTS audio file)\nWorkflow Parameters for configuration:\n- stockVideoPathOrUrl: URL or absolute local path to the long stock video.\nCommand: Executes a bash script using ffprobe and ffmpeg.\n  1. Gets duration of TTS audio ($json.ttsAudioPath).\n  2. Gets duration of the stock video.\n  3. Calculates a random start time within the stock video.\n  4. Cuts a video segment from the stock video with the same duration as the audio, starting at the random time.\n  5. The video segment is saved (e.g., to /tmp/ or /n8n_data/) without audio (-an).\n  - **IMPORTANT**: ffprobe and ffmpeg must be installed and accessible in the execution environment.\n  - The script attempts to download the video if a URL is provided and direct probing fails.\nOutput: String - the absolute path to the generated video segment file.\nExample output: \"/tmp/video_segment_1678886400.mp4\""
+    },
+    {
+        "parameters": {
+            "command": "#!/bin/bash\n# This script merges the video segment with the TTS audio using FFmpeg.\n\nVIDEO_SEGMENT_PATH=\"{{ $json.videoSegmentPath || '/tmp/dummy_segment_for_merge.mp4' }}\"\nTTS_AUDIO_PATH=\"{{ $json.ttsAudioPath || '/tmp/dummy_audio_for_merge.wav' }}\"\nOUTPUT_FILENAME=\"final_video_$(date +%s).mp4\"\nOUTPUT_FINAL_VIDEO_PATH=\"/tmp/$OUTPUT_FILENAME\" # Or /n8n_data/$OUTPUT_FILENAME\n\necho \"Merging video and audio.\" >&2\necho \"Video Segment Path: $VIDEO_SEGMENT_PATH\" >&2\necho \"TTS Audio Path: $TTS_AUDIO_PATH\" >&2\n\n# Create dummy files if default paths are used and files don't exist (for testing this node standalone)\nif [ \"$VIDEO_SEGMENT_PATH\" == \"/tmp/dummy_segment_for_merge.mp4\" ] && [ ! -f \"$VIDEO_SEGMENT_PATH\" ]; then\n  echo \"Creating dummy video segment for testing merge.\" >&2\n  ffmpeg -f lavfi -i testsrc=duration=5:size=1280x720:rate=30 -c:v libx264 -an -y \"$VIDEO_SEGMENT_PATH\" > /dev/null 2>&1\nfi\nif [ \"$TTS_AUDIO_PATH\" == \"/tmp/dummy_audio_for_merge.wav\" ] && [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n  echo \"Creating dummy audio for testing merge.\" >&2\n  ffmpeg -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 5 -c:a pcm_s16le -y \"$TTS_AUDIO_PATH\" > /dev/null 2>&1\nfi\n\nif [ ! -f \"$VIDEO_SEGMENT_PATH\" ]; then\n  echo \"Error: Video segment file not found at $VIDEO_SEGMENT_PATH\" >&2\n  exit 1\nfi\nif [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n  echo \"Error: TTS audio file not found at $TTS_AUDIO_PATH\" >&2\n  exit 1\nfi\n\n# Merge video and audio\n# -c:v copy: Stream copy video (no re-encoding)\n# -c:a aac: Encode audio to AAC (common for MP4)\n# -map 0:v:0: Use video from the first input (video_segment.mp4)\n# -map 1:a:0: Use audio from the second input (tts_audio.wav)\n# -shortest: Finish encoding when the shortest input stream ends.\n# -y: Overwrite output file without asking.\nffmpeg -i \"$VIDEO_SEGMENT_PATH\" -i \"$TTS_AUDIO_PATH\" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest -y \"$OUTPUT_FINAL_VIDEO_PATH\"\n\nif [ $? -ne 0 ]; then\n  echo \"FFmpeg merge command failed.\" >&2\n  exit 1\nfi\n\necho \"Final video created at: $OUTPUT_FINAL_VIDEO_PATH\" >&2\n# The last line (stdout) of the script MUST be the path to the generated file.\necho \"$OUTPUT_FINAL_VIDEO_PATH\"",
+            "options": {
+                "shell": true, // Execute with bash
+                "output": "string", // Expect a string (the file path) as output
+                "executionTimeout": 300 // Timeout in seconds
+            }
+        },
+        "name": "6. Merge Audio + Video (FFmpeg)",
+        "type": "n8n-nodes-base.executeCommand",
+        "typeVersion": 2.1,
+        "position": [
+            2150, // Adjusted position
+            180
+        ],
+        "notes": "Input: JSON from '5a. Set Video Segment Path'.\n- $json.videoSegmentPath: String (path to the video segment)\n- $json.ttsAudioPath: String (path to the TTS audio file)\nCommand: Executes a bash script using FFmpeg.\n  - Merges the video segment with the TTS audio.\n  - Video is stream copied (if possible), audio is encoded to AAC.\n  - Uses `-shortest` to ensure synchronization.\n  - Output is a final .mp4 file (e.g., in /tmp/ or /n8n_data/).\n  - **IMPORTANT**: FFmpeg must be installed and accessible.\nOutput: String - the absolute path to the final merged video file.\nExample output: \"/tmp/final_video_1678886400.mp4\""
+    },
+    {
+        "parameters": {
+            "command": "#!/bin/bash\n# This script transcribes the TTS audio to an SRT file using Whisper.\n\nTTS_AUDIO_PATH=\"{{ $json.ttsAudioPath || '/tmp/dummy_audio_for_srt.wav' }}\"\n# Output SRT file in the same directory as audio, with .srt extension\nOUTPUT_SRT_FILENAME=\"subtitles_$(date +%s).srt\"\nOUTPUT_SRT_PATH=\"/tmp/$OUTPUT_SRT_FILENAME\" # Or /n8n_data/$OUTPUT_SRT_FILENAME\n\nWHISPER_MODEL=\"{{ $parameter.whisperModel || 'base.en' }}\" # Workflow parameter for model size/language\nWHISPER_IMPLEMENTATION=\"{{ $parameter.whisperImplementation || 'whispercpp' }}\" # 'whispercpp', 'fasterwhisper', 'openai_whisper'\n\necho \"Transcribing audio to SRT.\" >&2\necho \"TTS Audio Path: $TTS_AUDIO_PATH\" >&2\necho \"Whisper Model: $WHISPER_MODEL\" >&2\necho \"Whisper Implementation: $WHISPER_IMPLEMENTATION\" >&2\n\n# Create a dummy audio file if the default path is used and file doesn't exist (for testing)\nif [ \"$TTS_AUDIO_PATH\" == \"/tmp/dummy_audio_for_srt.wav\" ] && [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n  echo \"Creating dummy audio file for testing transcription.\" >&2\n  ffmpeg -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 5 -c:a pcm_s16le -y \"$TTS_AUDIO_PATH\" > /dev/null 2>&1\nfi\n\nif [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n  echo \"Error: TTS audio file not found at $TTS_AUDIO_PATH\" >&2\n  exit 1\nfi\n\n# Adapt the command based on your Whisper implementation\nif [ \"$WHISPER_IMPLEMENTATION\" == \"openai_whisper\" ]; then\n  # Assumes 'whisper' CLI from OpenAI is installed and in PATH\n  # whisper \"$TTS_AUDIO_PATH\" --model \"$WHISPER_MODEL\" --output_format srt --output_dir \"$(dirname \"$OUTPUT_SRT_PATH\")\"\n  # The above command might create a file with a name based on the audio file. We need to rename/move it or predict its name.\n  # For simplicity, let's assume it outputs to stdout or a predictable file that we can then move.\n  # Placeholder - replace with your actual OpenAI Whisper CLI command:\n  echo \"Language: en\\n\\n0\\n00:00:00,240 --> 00:00:02,740\\nThis is a dummy subtitle from OpenAI Whisper simulation.\" > \"$OUTPUT_SRT_PATH\"\n  if [ $? -ne 0 ]; then echo \"OpenAI Whisper command failed\" >&2; exit 1; fi\nelif [ \"$WHISPER_IMPLEMENTATION\" == \"whispercpp\" ]; then\n  # Assumes 'main' (from whisper.cpp) and models are accessible.\n  # Adjust path to 'main' and models folder as needed.\n  # ./main -m /path/to/whisper.cpp/models/ggml-$WHISPER_MODEL.bin -f \"$TTS_AUDIO_PATH\" -osrt -of \"$(basename \"$OUTPUT_SRT_PATH\" .srt)\"\n  # The -of flag in whisper.cpp writes filename (without extension), so this should work if OUTPUT_SRT_PATH is /tmp/subtitles_timestamp\n  # Placeholder - replace with your actual whisper.cpp command:\n  echo \"Language: en\\n\\n0\\n00:00:00,240 --> 00:00:02,740\\nThis is a dummy subtitle from whisper.cpp simulation.\" > \"$OUTPUT_SRT_PATH\"\n   if [ $? -ne 0 ]; then echo \"whisper.cpp command failed\" >&2; exit 1; fi\nelif [ \"$WHISPER_IMPLEMENTATION\" == \"fasterwhisper\" ]; then\n  # Assumes you have a Python script or CLI wrapper for faster-whisper\n  # Example: python /path/to/your/faster_whisper_script.py --audio \"$TTS_AUDIO_PATH\" --model \"$WHISPER_MODEL\" --output_srt \"$OUTPUT_SRT_PATH\"\n  # Placeholder - replace with your actual faster-whisper command:\n  echo \"Language: en\\n\\n0\\n00:00:00,240 --> 00:00:02,740\\nThis is a dummy subtitle from faster-whisper simulation.\" > \"$OUTPUT_SRT_PATH\"\n  if [ $? -ne 0 ]; then echo \"faster-whisper command failed\" >&2; exit 1; fi\nelse \n  echo \"Unsupported Whisper implementation: $WHISPER_IMPLEMENTATION\" >&2\n  exit 1\nfi\n\necho \"SRT file generated at: $OUTPUT_SRT_PATH\" >&2\n# The last line (stdout) of the script MUST be the path to the generated SRT file.\necho \"$OUTPUT_SRT_PATH\"",
+            "options": {
+                "shell": true, // Execute with bash
+                "output": "string", // Expect a string (the file path) as output
+                "executionTimeout": 600 // Timeout in seconds, transcription can be slow
+            }
+        },
+        "name": "7a. Transcribe (Whisper) -> SRT",
+        "type": "n8n-nodes-base.executeCommand",
+        "typeVersion": 2.1,
+        "position": [
+            2550, // Adjusted position
+            180
+        ],
+        "notes": "Input: JSON from '6a. Set Final Video Path' (but uses ttsAudioPath from earlier).\n- $json.ttsAudioPath: String (path to the original TTS audio file for best quality transcription)\nWorkflow Parameters for configuration:\n- whisperModel: Whisper model name (e.g., 'base.en', 'small.en', 'medium.en').\n- whisperImplementation: 'whispercpp', 'fasterwhisper', or 'openai_whisper'.\nCommand: Executes a bash script that calls the selected local Whisper implementation.\n  - Transcribes $json.ttsAudioPath to an .srt file.\n  - Saves .srt file (e.g., to /tmp/ or /n8n_data/).\n  - **IMPORTANT**: The script *must* be adapted with your actual Whisper command-line calls, model paths, and chosen implementation details.\n  - Placeholder commands currently create dummy .srt files.\nOutput: String - the absolute path to the generated .srt file.\nExample output: \"/tmp/subtitles_1678886400.srt\""
+    },
+    {
+        "parameters": {
+            "command": "#!/bin/bash\n# This script burns the SRT subtitles into the video using FFmpeg.\n\nFINAL_VIDEO_PATH=\"{{ $json.finalVideoPath || '/tmp/dummy_final_video_for_subs.mp4' }}\"\nSRT_PATH=\"{{ $json.srtPath || '/tmp/dummy_subtitles_for_burn.srt' }}\"\nOUTPUT_FILENAME=\"final_video_subs_$(date +%s).mp4\"\nOUTPUT_VIDEO_WITH_SUBS_PATH=\"/tmp/$OUTPUT_FILENAME\" # Or /n8n_data/$OUTPUT_FILENAME\n\n# Optional: Subtitle styling (FFmpeg ass filter syntax)\n# Example: \"Fontsize=18,PrimaryColour=&H00FFFFFF,BorderStyle=1,Outline=1,Shadow=0.5\"\nSUBTITLE_STYLE=\"{{ $parameter.subtitleStyle || 'Fontname=Arial,Fontsize=16,PrimaryColour=&HFFFFFF,BorderStyle=1,Outline=1,BackColour=&H80000000,Shadow=0' }}\"\n\necho \"Burning subtitles into video.\" >&2\necho \"Final Video Path: $FINAL_VIDEO_PATH\" >&2\necho \"SRT Path: $SRT_PATH\" >&2\necho \"Subtitle Style: $SUBTITLE_STYLE\" >&2\n\n# Create dummy files if default paths are used and files don't exist (for testing)\nif [ \"$FINAL_VIDEO_PATH\" == \"/tmp/dummy_final_video_for_subs.mp4\" ] && [ ! -f \"$FINAL_VIDEO_PATH\" ]; then\n  echo \"Creating dummy final video for testing subtitle burn.\" >&2\n  ffmpeg -f lavfi -i testsrc=duration=5:size=1280x720:rate=30 -c:v libx264 -y \"$FINAL_VIDEO_PATH\" > /dev/null 2>&1\nfi\nif [ \"$SRT_PATH\" == \"/tmp/dummy_subtitles_for_burn.srt\" ] && [ ! -f \"$SRT_PATH\" ]; then\n  echo \"Creating dummy SRT for testing subtitle burn.\" >&2\n  echo \"1\\n00:00:01,000 --> 00:00:03,000\\nDummy subtitle for testing.\" > \"$SRT_PATH\"\nfi\n\nif [ ! -f \"$FINAL_VIDEO_PATH\" ]; then echo \"Error: Final video file not found at $FINAL_VIDEO_PATH\" >&2; exit 1; fi\nif [ ! -f \"$SRT_PATH\" ]; then echo \"Error: SRT file not found at $SRT_PATH\" >&2; exit 1; fi\n\n# Burn subtitles using FFmpeg's subtitles filter\n# The 'subtitles' filter requires a POSIX path. If running on Windows with WSL paths, ensure conversion if needed.\n# Forcing style: force_style='${SUBTITLE_STYLE}'\nffmpeg -i \"$FINAL_VIDEO_PATH\" -vf \"subtitles='$SRT_PATH':force_style='${SUBTITLE_STYLE}'\" -c:v libx264 -crf 23 -preset medium -c:a copy -y \"$OUTPUT_VIDEO_WITH_SUBS_PATH\"\n\n# Alternative without style forcing, if SRT has styles or default is fine:\n# ffmpeg -i \"$FINAL_VIDEO_PATH\" -vf \"subtitles='$SRT_PATH'\" -c:v libx264 -crf 23 -preset medium -c:a copy -y \"$OUTPUT_VIDEO_WITH_SUBS_PATH\"\n\nif [ $? -ne 0 ]; then\n  echo \"FFmpeg burn subtitles command failed.\" >&2\n  exit 1\nfi\n\necho \"Video with burned-in subtitles created at: $OUTPUT_VIDEO_WITH_SUBS_PATH\" >&2\necho \"$OUTPUT_VIDEO_WITH_SUBS_PATH\"",
+            "options": {
+                "shell": true, // Execute with bash
+                "output": "string", // Expect a string (the file path) as output
+                "executionTimeout": 600 // Timeout in seconds, re-encoding can be slow
+            }
+        },
+        "name": "7b. Burn Subtitles (FFmpeg)",
+        "type": "n8n-nodes-base.executeCommand",
+        "typeVersion": 2.1,
+        "position": [
+            2950, // Adjusted position
+            180
+        ],
+        "notes": "Input: JSON from '7aa. Set SRT Path'.\n- $json.finalVideoPath: String (path to the video without subtitles)\n- $json.srtPath: String (path to the .srt subtitle file)\nWorkflow Parameters for configuration:\n- subtitleStyle: ASS style string for subtitles (e.g., 'Fontsize=18,PrimaryColour=&H00FFFFFF').\nCommand: Executes a bash script using FFmpeg.\n  - Burns the subtitles from the .srt file directly into the video track.\n  - Requires re-encoding the video.\n  - Output is a new .mp4 file with subtitles (e.g., in /tmp/ or /n8n_data/).\n  - **IMPORTANT**: FFmpeg must be installed and accessible.\nOutput: String - the absolute path to the video file with burned-in subtitles.\nExample output: \"/tmp/final_video_subs_1678886400.mp4\""
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2", // Or 'apiKey' if you prefer and it's set up
+        "resource": "video",
+        "operation": "upload",
+        "title": "={{ $json.title || 'Faszinierende Reddit Geschichte' }}",
+        // Use optimized text if available and not empty, otherwise original. Slice for YouTube's limit.
+        "description": "={{ ($json.optimizedText && $json.optimizedText.trim() !== '' ? $json.optimizedText : $json.originalSelftext).slice(0, 4950) }}",
+        "videoPrivacy": "={{ $parameter.youtubePrivacy || 'private' }}", // private, public, unlisted
+        "tags": "={{ $parameter.youtubeTags || 'reddit,story,aita,shorts' }}", // Comma-separated tags
+        "categoryId": "={{ $parameter.youtubeCategoryId || '24' }}", // 24 = Entertainment, check YouTube API for more
+        "options": {
+          "notifySubscribers": false, // Typically false for automated uploads
+          "inputBinaryField": "data", // From 'Read Final Video File' node
+          // Generate a somewhat unique filename for YouTube to prevent collisions if re-uploading
+          "fileName": "={{ ($json.title || 'reddit_story').replace(/[^a-zA-Z0-9_]/g, '_').slice(0,100) }}_{{ Date.now() }}.mp4"
+        }
+      },
+      "name": "8. Upload to YouTube",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1.1, // Or latest version
+      "position": [
+        3550, // Adjusted position
+        180
+      ],
+      "credentials": {
+        // Replace 'YOUR_YOUTUBE_CREDENTIAL_NAME_IN_N8N' with the actual name of your YouTube credential in n8n
+        "youTubeOAuth2Api": {
+          "id": "={{ $credential.youtubeOAuth2Api.id }}", // Example if you store ID in credential parameter
+          "name": "{{ $credential.youtubeOAuth2Api.name || 'My Default YouTube Creds' }}" // Or hardcode your credential name
+        }
+      },
+      "notes": "Input: Binary video data from 'Read Final Video File' node (in property 'data').\n- $json.title: Original Reddit post title.\n- $json.optimizedText: LLM optimized text.\n- $json.originalSelftext: Original Reddit post text.\nWorkflow Parameters for configuration:\n- youtubePrivacy: 'private', 'public', or 'unlisted'.\n- youtubeTags: Comma-separated string of tags.\n- youtubeCategoryId: Numeric ID for YouTube category.\nOutput: API response from YouTube."
+    },
+    {
+      "parameters": {
+        "url": "https://open.tiktokapis.com/v2/video/upload/", // Example, check TikTok dev docs for actual endpoint
+        "options": {},
+        "sendHeaders": true,
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer {{ $credential.tiktokApiAccessToken }}" // Needs TikTok Access Token
+          },
+          {
+            "name": "Content-Type",
+            "value": "multipart/form-data; boundary=---BOUNDARY" // Example for multipart
+          }
+        ],
+        "sendBody": true,
+        "requestMethod": "POST",
+        // Body for TikTok is complex: requires multipart/form-data with video file and metadata.
+        // This is a simplified placeholder. Actual implementation is much more involved.
+        "bodyParameters": "--BOUNDARY\r\nContent-Disposition: form-data; name=\"video\"; filename=\"{{ ($json.title || 'tiktok_video').replace(/[^a-zA-Z0-9_]/g, '_').slice(0,100) }}.mp4\"\r\nContent-Type: video/mp4\r\n\r\n{{ $binary.data }} // This assumes $binary.data holds the video content from Read Final Video File\r\n--BOUNDARY\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\n{{ $json.title || 'Tolle Story!' }}\r\n--BOUNDARY--",
+        "responseFormat": "json"
+      },
+      "name": "9. Upload to TikTok (Placeholder)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        3550,
+        380 // Below YouTube
+      ],
+      "notes": "**PLACEHOLDER - REQUIRES DETAILED IMPLEMENTATION**\nInput: Binary video data, title, description.\n- This node is a basic placeholder for TikTok video upload.\n- TikTok's API for direct video upload is complex, requires specific scopes, user interaction for token, and multipart/form-data requests.\n- You'll need to consult the TikTok Developer API documentation extensively.\n- Credentials for TikTok API (Access Token) must be managed securely.\n- Consider using community nodes if available and trusted, or a dedicated microservice/script for TikTok uploads called via Execute Command or HTTP Request."
+    },
+    {
+      "parameters": {
+        "url": "https://graph.facebook.com/v18.0/{{ $credential.instagramAccountId }}/media", // Example for Reels, check Meta Graph API docs
+        "options": {},
+        "sendHeaders": true,
+        "headers": [
+          {
+            "name": "Authorization",
+            "value": "Bearer {{ $credential.instagramAccessToken }}" // Needs Instagram Graph API Access Token
+          }
+        ],
+        "sendBody": true,
+        "requestMethod": "POST",
+        // Body for Instagram Reels is a multi-step process (upload, then publish). This is highly simplified.
+        "bodyParameters": "={{ JSON.stringify({\n  media_type: 'REELS',\n  video_url: '{{ $json.publiclyAccessibleVideoUrl }}', // Instagram often requires a public URL for the video file\n  caption: `${ ($json.title || 'Interessante Geschichte!') }\\n\\n${ ($json.optimizedText || $json.originalSelftext).slice(0,2000) }\\n#reddit #story #reels`,\n  share_to_feed: true\n}) }}",
+        "responseFormat": "json"
+      },
+      "name": "10. Upload to Instagram Reels (Placeholder)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        3550,
+        580 // Below TikTok
+      ],
+      "notes": "**PLACEHOLDER - REQUIRES DETAILED IMPLEMENTATION**\nInput: Publicly accessible video URL, caption.\n- This node is a basic placeholder for Instagram Reels upload.\n- Instagram (Meta Graph API) for Reels upload is a multi-step process (upload to get a container ID, then publish the container).\n- It often requires the video to be hosted at a publicly accessible URL first.\n- You'll need to consult the Meta for Developers (Instagram Graph API) documentation for `/media` and `/media_publish` endpoints.\n- Credentials for Instagram Graph API (Access Token, Instagram Account ID) must be managed securely.\n- This example assumes a simplified single call which is NOT how the actual API works for Reels."
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [
+        [
+          {
+            "node": "1. Reddit Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Reddit Scraper": {
+      "main": [
+        [
+          {
+            "node": "2. Filter Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Filter Posts": {
+      "main": [ // True output of IF (items that matched)
+        [
+          {
+            "node": "2a. Select First Matching Post", // Send matching items to select the first one
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2a. Select First Matching Post": { // Output of Items node (the single selected post)
+      "main": [
+        [
+          {
+            "node": "3. LLM Text Optimierung (Ollama)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. LLM Text Optimierung (Ollama)": {
+      "main": [
+        [
+          {
+            "node": "3a. Extract Optimized Text", // New node to get the response text
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const itemJson = $input.item.json;\nconst originalData = itemJson.data || {}; \nconst ollamaResponseText = itemJson.response || \"\";\n\nreturn {\n  title: originalData.title,\n  originalSelftext: originalData.selftext,\n  score: originalData.score,\n  num_comments: originalData.num_comments,\n  ollamaApiResponse: itemJson,\n  optimizedText: ollamaResponseText\n};"
+      },
+      "name": "3a. Extract Optimized Text",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [
+        1150,
+        180
+      ],
+      "notes": "Input: Merged JSON from Ollama node (contains original post data from node 2a and Ollama's response).\n- $input.item.json.data: Object (original Reddit post data like title, selftext, etc.)\n- $input.item.json.response: String (the optimized text from LLM)\nOutput: A new JSON object structured as:\n{\n  \"title\": \"Original Reddit Title\",\n  \"originalSelftext\": \"Original Reddit text...\",\n  \"score\": 1234,\n  \"num_comments\": 56,\n  \"ollamaApiResponse\": { ...full response from Ollama node... },\n  \"optimizedText\": \"The new rewritten text by the LLM...\"\n}"
+    },
+    "3a. Extract Optimized Text": {
+      "main": [
+        [
+          {
+            "node": "4. Text-to-Speech (TTS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Text-to-Speech (TTS)": {
+      "main": [
+        [
+          {
+            "node": "4a. Set TTS Output Path", // New node to formalize output
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "ttsAudioPath",
+              "value": "={{ $json.output }}" // The output of Execute Command is the path
+            }
+          ]
+        },
+        "options": {
+          "keepOnlySet": false // Merge with existing data
+        }
+      },
+      "name": "4a. Set TTS Output Path",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1.1,
+      "position": [
+        1550, // Position after TTS node
+        180
+      ],
+      "notes": "Input: Output from '4. Text-to-Speech (TTS)' which is a string path.\nOutput: Adds 'ttsAudioPath' to the JSON object.\nExample Output from this node (merged with previous data):\n{\n  \"title\": \"Original Title\",\n  \"optimizedText\": \"Some new text...\",\n  // ... other data from 3a ...\n  \"ttsAudioPath\": \"/tmp/tts_audio_1678886400.wav\"\n}"
+    },
+    "4a. Set TTS Output Path": {
+      "main": [
+        [
+          {
+            "node": "5. Cut Stock Video (FFmpeg)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Cut Stock Video (FFmpeg)": {
+      "main": [
+        [
+          {
+            "node": "5a. Set Video Segment Path", // New node
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "videoSegmentPath",
+              "value": "={{ $json.output }}" // Output of Execute Command is the path
+            }
+          ]
+        },
+        "options": {
+          "keepOnlySet": false // Merge with existing data
+        }
+      },
+      "name": "5a. Set Video Segment Path",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1.1,
+      "position": [
+        1950, // Position after Cut Stock Video node
+        180
+      ],
+      "notes": "Input: Output from '5. Cut Stock Video (FFmpeg)' which is a string path.\nOutput: Adds 'videoSegmentPath' to the JSON object.\nExample Output (merged with previous data):\n{\n  // ... other data from 4a ...\n  \"ttsAudioPath\": \"/tmp/tts_audio.wav\",\n  \"videoSegmentPath\": \"/tmp/video_segment_1678886400.mp4\"\n}"
+    },
+    "5a. Set Video Segment Path": {
+      "main": [
+        [
+          {
+            "node": "6. Merge Audio + Video (FFmpeg)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Merge Audio + Video (FFmpeg)": {
+      "main": [
+        [
+          {
+            "node": "6a. Set Final Video Path", // New Node
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "finalVideoPath",
+              "value": "={{ $json.output }}" // Output of Execute Command is the path
+            }
+          ]
+        },
+        "options": {
+          "keepOnlySet": false // Merge with existing data
+        }
+      },
+      "name": "6a. Set Final Video Path",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1.1,
+      "position": [
+        2350, // Position after Merge Audio + Video node
+        180
+      ],
+      "notes": "Input: Output from '6. Merge Audio + Video (FFmpeg)' which is a string path.\nOutput: Adds 'finalVideoPath' to the JSON object.\nExample Output (merged with previous data):\n{\n  // ... other data from 5a ...\n  \"videoSegmentPath\": \"/tmp/video_segment.mp4\",\n  \"finalVideoPath\": \"/tmp/final_video_1678886400.mp4\"\n}"
+    },
+    "6a. Set Final Video Path": {
+      "main": [
+        [
+          {
+            "node": "7a. Transcribe (Whisper) -> SRT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7a. Transcribe (Whisper) -> SRT": {
+      "main": [
+        [
+          {
+            "node": "7aa. Set SRT Path", // New Node
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "srtPath",
+              "value": "={{ $json.output }}" // Output of Execute Command is the path
+            }
+          ]
+        },
+        "options": {
+          "keepOnlySet": false // Merge with existing data
+        }
+      },
+      "name": "7aa. Set SRT Path",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1.1,
+      "position": [
+        2750, // Position after Transcribe node
+        180
+      ],
+      "notes": "Input: Output from '7a. Transcribe (Whisper) -> SRT' which is a string path.\nOutput: Adds 'srtPath' to the JSON object.\nExample Output (merged with previous data):\n{\n  // ... other data from 6a ...\n  \"finalVideoPath\": \"/tmp/final_video.mp4\",\n  \"srtPath\": \"/tmp/subtitles_1678886400.srt\"\n}"
+    },
+    "7aa. Set SRT Path": {
+      "main": [
+        [
+          {
+            "node": "7b. Burn Subtitles (FFmpeg)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7b. Burn Subtitles (FFmpeg)": {
+      "main": [
+        [
+          {
+            "node": "7ba. Set Final Video With Subs Path", // New Node
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "finalVideoWithSubsPath",
+              "value": "={{ $json.output }}" // Output of Execute Command is the path
+            }
+          ]
+        },
+        "options": {
+          "keepOnlySet": false // Merge with existing data
+        }
+      },
+      "name": "7ba. Set Final Video With Subs Path",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1.1,
+      "position": [
+        3150, // Position after Burn Subtitles node
+        180
+      ],
+      "notes": "Input: Output from '7b. Burn Subtitles (FFmpeg)' which is a string path.\nOutput: Adds 'finalVideoWithSubsPath' to the JSON object.\nThis path refers to the video with subtitles burned in.\nExample Output (merged with previous data):\n{\n  // ... other data from 7aa ...\n  \"srtPath\": \"/tmp/subtitles.srt\",\n  \"finalVideoWithSubsPath\": \"/tmp/final_video_subs_1678886400.mp4\"\n}"
+    },
+    "7ba. Set Final Video With Subs Path": {
+      "main": [
+        [
+          {
+            "node": "Read Final Video File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Final Video File": {
+      "main": [
+        [
+          {
+            "node": "8. Upload to YouTube",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        // Branch out from Read Final Video File to TikTok and Instagram as well
+        [
+          {
+            "node": "9. Upload to TikTok (Placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "10. Upload to Instagram Reels (Placeholder)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+    // Note: The YouTube node (8) does not have an output connected in this basic setup.
+    // You might want to add logging or further steps after each upload.
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "V1"
+  },
+  "versionId": "c129075f-b6f9-4a8a-9e8a-0f1234567890", // Example Version ID
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
