@@ -3,6 +3,7 @@ volumes:
   postgres_storage:
   ollama_storage:
   qdrant_storage:
+  shared_data:
 
 networks:
   demo:
@@ -20,9 +21,22 @@ x-n8n: &service-n8n
     - N8N_ENCRYPTION_KEY
     - N8N_USER_MANAGEMENT_JWT_SECRET
     - OLLAMA_HOST=${OLLAMA_HOST:-ollama:11434}
+    - N8N_LOG_LEVEL=${DEBUG_LOGGING:-info}
+    - N8N_LOG_OUTPUT=file
+    - N8N_EXECUTION_TIMEOUT=${EXECUTION_TIMEOUT_SECONDS:-3600}
+    - N8N_MAX_EXECUTION_TIMEOUT=${EXECUTION_TIMEOUT_SECONDS:-3600}
+    - EXECUTIONS_PROCESS=main
+    - EXECUTIONS_MODE=regular
+    - N8N_METRICS=true
   env_file:
     - path: .env
       required: true
+  healthcheck:
+    test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:5678/healthz || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40s
 
 x-ollama: &service-ollama
   image: ollama/ollama:latest
@@ -33,6 +47,12 @@ x-ollama: &service-ollama
     - 11434:11434
   volumes:
     - ollama_storage:/root/.ollama
+  healthcheck:
+    test: ["CMD-SHELL", "curl -f http://localhost:11434/api/version || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40s
 
 x-init-ollama: &init-ollama
   image: ollama/ollama:latest
@@ -64,6 +84,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    networks: ['demo']
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   n8n-import:
     <<: *service-n8n
@@ -75,6 +117,7 @@ services:
       - "n8n import:credentials --separate --input=/demo-data/credentials && n8n import:workflow --separate --input=/demo-data/workflows"
     volumes:
       - ./n8n/demo-data:/demo-data
+      - shared_data:/data/shared
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,12 +132,22 @@ services:
     volumes:
       - n8n_storage:/home/node/.n8n
       - ./n8n/demo-data:/demo-data
-      - ./shared:/data/shared
+      - shared_data:/data/shared
+      - ./scripts:/app/scripts
+      - /var/log/n8n:/var/log/n8n
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       n8n-import:
         condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
 
   qdrant:
     image: qdrant/qdrant
@@ -106,6 +159,71 @@ services:
       - 6333:6333
     volumes:
       - qdrant_storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  nginx:
+    image: nginx:alpine
+    hostname: nginx
+    container_name: nginx
+    networks: ['demo']
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - n8n
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring and logging
+  prometheus:
+    image: prom/prometheus:latest
+    hostname: prometheus
+    container_name: prometheus
+    networks: ['demo']
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    profiles: ["monitoring"]
+
+  grafana:
+    image: grafana/grafana:latest
+    hostname: grafana
+    container_name: grafana
+    networks: ['demo']
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana_storage:/var/lib/grafana
+    profiles: ["monitoring"]
 
   ollama-cpu:
     profiles: ["cpu"]
@@ -116,11 +234,14 @@ services:
     <<: *service-ollama
     deploy:
       resources:
+        limits:
+          memory: 8G
         reservations:
           devices:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+          memory: 4G
 
   ollama-gpu-amd:
     profiles: ["gpu-amd"]
@@ -129,6 +250,12 @@ services:
     devices:
       - "/dev/kfd"
       - "/dev/dri"
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
 
   ollama-pull-llama-cpu:
     profiles: ["cpu"]
@@ -148,3 +275,6 @@ services:
     image: ollama/ollama:rocm
     depends_on:
      - ollama-gpu-amd
+
+volumes:
+  grafana_storage:
