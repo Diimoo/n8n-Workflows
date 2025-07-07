@@ -50,4 +50,64 @@ elif command -v yum &> /dev/null; then
 elif command -v apk &> /dev/null; then
     # Alpine Linux
     apk add --no-cache ffmpeg curl wget jq bc
-else\n    log \"WARNING: Unknown package manager, please install ffmpeg, curl, wget, jq, and bc manually\"\nfi\n\n# Set up cron jobs for maintenance\nlog \"Setting up cron jobs\"\ncat > /tmp/n8n_cron << 'EOF'\n# N8N Maintenance Cron Jobs\n# Clean up temporary files daily at 2 AM\n0 2 * * * /app/scripts/cleanup_temp_files.sh\n\n# Monitor workflow health every 5 minutes\n*/5 * * * * /app/scripts/monitor_workflow.sh\n\n# Weekly log rotation\n0 3 * * 0 /app/scripts/rotate_logs.sh\nEOF\n\n# Install cron job\nif command -v crontab &> /dev/null; then\n    crontab /tmp/n8n_cron\n    log \"Cron jobs installed successfully\"\nelse\n    log \"WARNING: crontab not available, manual setup of scheduled tasks required\"\nfi\n\n# Set up log rotation\nlog \"Setting up log rotation\"\ncat > /etc/logrotate.d/n8n << 'EOF'\n/var/log/n8n/*.log {\n    daily\n    rotate 7\n    compress\n    delaycompress\n    missingok\n    notifempty\n    create 0644 root root\n}\nEOF\n\n# Validate environment\nlog \"Validating environment\"\nif ! command -v ffmpeg &> /dev/null; then\n    handle_error \"FFmpeg is not installed or not in PATH\"\nfi\n\nif ! command -v curl &> /dev/null; then\n    handle_error \"curl is not installed or not in PATH\"\nfi\n\nif ! command -v jq &> /dev/null; then\n    handle_error \"jq is not installed or not in PATH\"\nfi\n\nlog \"Environment setup completed successfully\"\nlog \"Please review the following configuration files:\"\nlog \"  - /app/n8n_workflow_reddit_video_automation.json\"\nlog \"  - /app/docker-compose.yml\"\nlog \"  - Environment variables in .env file\"\nlog \"  - Cron jobs in crontab\"\nlog \"  - Log rotation in /etc/logrotate.d/n8n\"\n
+else
+    log "WARNING: Unknown package manager, please install ffmpeg, curl, wget, jq, and bc manually"
+fi
+
+# Set up cron jobs for maintenance
+log "Setting up cron jobs"
+cat > /tmp/n8n_cron << 'EOF'
+# N8N Maintenance Cron Jobs
+# Clean up temporary files daily at 2 AM
+0 2 * * * /app/scripts/cleanup_temp_files.sh
+
+# Monitor workflow health every 5 minutes
+*/5 * * * * /app/scripts/monitor_workflow.sh
+
+# Weekly log rotation
+0 3 * * 0 /app/scripts/rotate_logs.sh
+EOF
+
+# Install cron job
+if command -v crontab &> /dev/null; then
+    crontab /tmp/n8n_cron
+    log "Cron jobs installed successfully"
+else
+    log "WARNING: crontab not available, manual setup of scheduled tasks required"
+fi
+
+# Set up log rotation
+log "Setting up log rotation"
+cat > /etc/logrotate.d/n8n << 'EOF'
+/var/log/n8n/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+}
+EOF
+
+# Validate environment
+log "Validating environment"
+if ! command -v ffmpeg &> /dev/null; then
+    handle_error "FFmpeg is not installed or not in PATH"
+fi
+
+if ! command -v curl &> /dev/null; then
+    handle_error "curl is not installed or not in PATH"
+fi
+
+if ! command -v jq &> /dev/null; then
+    handle_error "jq is not installed or not in PATH"
+fi
+
+log "Environment setup completed successfully"
+log "Please review the following configuration files:"
+log "  - /app/n8n_workflow_reddit_video_automation.json"
+log "  - /app/docker-compose.yml"
+log "  - Environment variables in .env file"
+log "  - Cron jobs in crontab"
+log "  - Log rotation in /etc/logrotate.d/n8n"
