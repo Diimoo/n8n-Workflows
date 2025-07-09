@@ -1,622 +1,286 @@
 {
-  "name": "Reddit to Social Video Automation",
+  "name": "Reddit-to-Shorts Automator",
   "nodes": [
     {
       "parameters": {
-        "content": "## Workflow: Reddit Post to Social Media Video\n\n**Ziel:** Automatische Erstellung von Kurzvideos aus Reddit-Posts für Social Media.\n\n**Wichtige Hinweise zur Fehlerbehandlung & Logging:**\n1. **Globaler Error Trigger:** Es wird empfohlen, am Anfang dieses Workflows einen `Error Trigger` Node zu platzieren. Dieser kann einen separaten Workflow starten, um Fehler global zu behandeln (z.B. Benachrichtigung senden, Fehler loggen).\n2. **Execute Command Nodes:** Die Skripte in diesen Nodes nutzen `echo '...' >&2` für Logging ins n8n Execution Log und `exit 1` bei Fehlern, um den Node fehlschlagen zu lassen.\n3. **HTTP Request Nodes:** Für Nodes wie Ollama, YouTube, TikTok und Instagram sollte die Option `Continue on Fail` (im n8n Editor) geprüft werden. Nachfolgende `IF` Nodes können dann `$responseCode` und Fehler in der Antwort prüfen, um spezifisch zu reagieren.\n4. **Anpassung:** Dieser Workflow ist ein Template. Pfade, Befehle, API-Keys und Logik müssen an die eigene Umgebung angepasst werden."
-      },
-      "name": "Workflow Instructions & Error Handling Notes",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [50, 50],
-      "id": "workflow-instructions",
-      "color": {
-        "r": 255,
-        "g": 200,
-        "b": 0
-      }
-    },
-    {
-      "parameters": {},
-      "name": "Start",
-      "type": "n8n-nodes-base.start",
-      "typeVersion": 1,
-      "position": [250, 300],
-      "id": "start-node"
-    },
-    {
-      "parameters": {
-        "url": "={{ $parameter.subredditUrl || 'https://www.reddit.com/r/AmItheAsshole/hot.json?limit=100' }}",
-        "responseFormat": "json",
-        "options": {
-          "splitIntoItems": true,
-          "response": {
-            "response": {
-              "json": {
-                "pathToItems": "data.children"
-              }
-            }
-          }
-        }
-      },
-      "name": "1. Reddit Scraper",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [450, 300],
-      "id": "reddit-scraper",
-      "notes": "Input: Trigger (manual or scheduled). Can use workflow parameter 'subredditUrl'. Output: Individual JSON objects for each post under 'data.children'."
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": false,
-            "combineOperation": "all"
-          },
-          "conditions": [
+        "triggerTimes": {
+          "item": [
             {
-              "value1": "={{ $json.data.selftext }}",
-              "operation": "isNotEmpty"
-            },
-            {
-              "value1": "={{ $json.data.is_self }}",
-              "operation": "boolean",
-              "value2": true
-            },
-            {
-              "value1": "={{ $json.data.over_18 }}",
-              "operation": "boolean",
-              "value2": false
-            },
-            {
-              "value1": "={{ $json.data.selftext.split(' ').length }}",
-              "operation": "largerEqual",
-              "value2": "={{ $parameter.minWords || 300 }}"
-            },
-            {
-              "value1": "={{ $json.data.selftext.split(' ').length }}",
-              "operation": "smallerEqual",
-              "value2": "={{ $parameter.maxWords || 500 }}"
-            },
-            {
-              "value1": "={{ $json.data.score }}",
-              "operation": "largerEqual",
-              "value2": "={{ $parameter.minUpvotes || 1000 }}"
-            },
-            {
-              "value1": "={{ $json.data.num_comments }}",
-              "operation": "largerEqual",
-              "value2": "={{ $parameter.minComments || 50 }}"
+              "mode": "custom",
+              "hour": 9,
+              "minute": 0,
+              "second": 0
             }
           ]
-        },
-        "options": {}
+        }
       },
-      "name": "2. Filter Posts",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [650, 300],
-      "id": "filter-posts",
-      "notes": "Input: Individual JSON post objects from '1. Reddit Scraper'. Output: Only JSON objects of posts that match ALL criteria."
+      "id": "Cron",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "position": [200, 200],
+      "typeVersion": 1
     },
     {
       "parameters": {
-        "options": {
-          "mode": "first"
-        }
+        "requestMethod": "GET",
+        "url": "https://www.reddit.com/r/AITA/top.json?limit=1&t=day",
+        "responseFormat": "json"
       },
-      "name": "2a. Select First Matching Post",
-      "type": "n8n-nodes-base.limit",
-      "typeVersion": 1,
-      "position": [750, 180],
-      "id": "select-first-post",
-      "notes": "Input: Items that passed the '2. Filter Posts' IF node. Output: Only the very first item that matched the criteria."
-    },
-    {
-      "parameters": {
-        "url": "={{ $parameter.ollamaApiUrl || 'http://localhost:11434/api/generate' }}",
-        "sendBody": true,
-        "requestMethod": "POST",
-        "contentType": "application/json",
-        "bodyParameters": "={{ JSON.stringify({\n  model: $parameter.ollamaModel || 'mistral',\n  prompt: `Schreibe den folgenden Reddit-Post so um, dass er dieselbe Geschichte erzählt, aber emotionaler, spannender und idealerweise zwischen 500 und 700 Wörtern lang ist. Der Stil sollte erzählend sein und das ursprüngliche Ende beibehalten werden. Gib NUR den umgeschriebenen Text zurück, ohne zusätzliche Einleitungen, Kommentare oder Verabschiedungen vor oder nach der Geschichte.\\n\\nOriginal Post:\\n---\\n${$json.data.selftext}\\n---\\nUmschreibung: `,\n  stream: false,\n  options: {\n    num_ctx: $parameter.ollamaNumCtx || 4096,\n    temperature: $parameter.ollamaTemperature || 0.7\n  }\n}) }}",
-        "responseFormat": "json",
-        "options": {
-          "continueOnFail": true
-        }
-      },
-      "name": "3. LLM Text Optimierung (Ollama)",
+      "id": "Fetch Reddit",
+      "name": "Fetch Reddit",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [950, 180],
-      "id": "ollama-optimize",
-      "notes": "Input: JSON from '2a. Select First Matching Post'. Output: JSON from Ollama with optimized text in response field."
+      "position": [400, 200],
+      "typeVersion": 2
     },
     {
       "parameters": {
-        "jsCode": "const itemJson = $input.item.json;\nconst originalData = itemJson.data || {};\nconst ollamaResponseText = itemJson.response || \"\";\n\nreturn {\n  title: originalData.title,\n  originalSelftext: originalData.selftext,\n  score: originalData.score,\n  num_comments: originalData.num_comments,\n  ollamaApiResponse: itemJson,\n  optimizedText: ollamaResponseText\n};"
+        "functionCode": "const post = $json[\"data\"].children[0].data;\nreturn [{\n  json: {\n    title: post.title,\n    text: post.selftext\n  }\n}];"
       },
-      "name": "3a. Extract Optimized Text",
+      "id": "Extract Text",
+      "name": "Extract Text",
       "type": "n8n-nodes-base.function",
-      "typeVersion": 2,
-      "position": [1150, 180],
-      "id": "extract-optimized-text",
-      "notes": "Input: Merged JSON from Ollama node. Output: Structured JSON with title, originalSelftext, score, num_comments, and optimizedText."
+      "position": [600, 200],
+      "typeVersion": 1
     },
     {
       "parameters": {
-        "command": "#!/bin/bash\n\n# Production-ready TTS script with error handling and logging\n\nset -euo pipefail\n\n# Configuration\nOPTIMIZED_TEXT=\"{{ $json.optimizedText || 'Default text if not provided.' }}\"\nOUTPUT_FILENAME=\"tts_audio_$(date +%s).wav\"\nOUTPUT_PATH=\"/tmp/$OUTPUT_FILENAME\"\n\n# Voice and engine configuration\nTTS_VOICE_PRESET_FEMALE=\"v2/en_speaker_6\"\nTTS_VOICE_PRESET_MALE=\"v2/en_speaker_9\"\nSELECTED_VOICE=\"{{ $parameter.ttsVoice || 'female' }}\"\nTTS_ENGINE=\"{{ $parameter.ttsEngine || 'bark' }}\"\n\n# Logging function\nlog() {\n    echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $1\" >&2\n}\n\n# Error handling function\nhandle_error() {\n    log \"ERROR: $1\"\n    exit 1\n}\n\n# Validate inputs\nif [ -z \"$OPTIMIZED_TEXT\" ]; then\n    handle_error \"No text provided for TTS generation\"\nfi\n\n# Escape text for command line\nESCAPED_TEXT=$(echo \"$OPTIMIZED_TEXT\" | sed \"s/'/\\\\'/g\" | sed 's/\"/\\\\\"/g')\n\nlog \"Starting TTS generation\"\nlog \"Text length: ${#OPTIMIZED_TEXT} characters\"\nlog \"Voice: $SELECTED_VOICE\"\nlog \"Engine: $TTS_ENGINE\"\nlog \"Output path: $OUTPUT_PATH\"\n\n# TTS Generation with retry logic\nfor attempt in {1..3}; do\n    log \"TTS attempt $attempt/3\"\n    \n    if [ \"$TTS_ENGINE\" == \"bark\" ]; then\n        VOICE_TO_USE=$TTS_VOICE_PRESET_FEMALE\n        if [ \"$SELECTED_VOICE\" == \"male\" ]; then\n            VOICE_TO_USE=$TTS_VOICE_PRESET_MALE\n        elif [[ \"$SELECTED_VOICE\" == \"v2/\"* ]]; then\n            VOICE_TO_USE=$SELECTED_VOICE\n        fi\n        \n        log \"Using Bark voice: $VOICE_TO_USE\"\n        \n        # For production, replace with actual bark command\n        # bark --text \"$ESCAPED_TEXT\" --output_path \"$OUTPUT_PATH\" --voice_preset \"$VOICE_TO_USE\"\n        \n        # Simulation for template\n        ffmpeg -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 5 -c:a pcm_s16le \"$OUTPUT_PATH\" > /dev/null 2>&1\n        \n        if [ $? -eq 0 ] && [ -f \"$OUTPUT_PATH\" ]; then\n            log \"TTS generation successful\"\n            break\n        else\n            log \"TTS generation failed, attempt $attempt\"\n            if [ $attempt -eq 3 ]; then\n                handle_error \"TTS generation failed after 3 attempts\"\n            fi\n            sleep 2\n        fi\n    else\n        handle_error \"Unsupported TTS Engine: $TTS_ENGINE\"\n    fi\ndone\n\n# Validate output file\nif [ ! -f \"$OUTPUT_PATH\" ] || [ ! -s \"$OUTPUT_PATH\" ]; then\n    handle_error \"TTS output file is missing or empty\"\nfi\n\nlog \"TTS generation completed successfully\"\necho \"$OUTPUT_PATH\""
-      },
-      "name": "4. Text-to-Speech (TTS)",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 2.1,
-      "position": [1350, 180],
-      "id": "tts-generation",
-      "notes": "Production-ready TTS with error handling, logging, and retry logic.",
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "values": {
-          "string": [
-            {
-              "name": "ttsAudioPath",
-              "value": "={{ $json.output }}"
-            }
-          ]
-        },
-        "options": {
-          "keepOnlySet": false
-        }
-      },
-      "name": "4a. Set TTS Output Path",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [1550, 180],
-      "id": "set-tts-path",
-      "notes": "Adds ttsAudioPath to the JSON object for downstream processing."
-    },
-    {
-      "parameters": {
-        "command": "#!/bin/bash\n\n# Production-ready video cutting script with comprehensive error handling\n\nset -euo pipefail\n\n# Configuration\nTTS_AUDIO_PATH=\"{{ $json.ttsAudioPath || '/tmp/dummy_audio_for_video_cut.wav' }}\"\nSTOCK_VIDEO_URL_OR_PATH=\"{{ $parameter.stockVideoPathOrUrl || 'https://videos.pexels.com/video-files/3873428/3873428-hd_1280_720_25fps.mp4' }}\"\nOUTPUT_FILENAME=\"video_segment_$(date +%s).mp4\"\nOUTPUT_VIDEO_SEGMENT_PATH=\"/tmp/$OUTPUT_FILENAME\"\n\n# Logging function\nlog() {\n    echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $1\" >&2\n}\n\n# Error handling function\nhandle_error() {\n    log \"ERROR: $1\"\n    exit 1\n}\n\n# Cleanup function\ncleanup() {\n    if [ -n \"${TEMP_STOCK_VIDEO:-}\" ] && [ -f \"$TEMP_STOCK_VIDEO\" ]; then\n        rm -f \"$TEMP_STOCK_VIDEO\"\n        log \"Cleaned up temporary video file\"\n    fi\n}\n\ntrap cleanup EXIT\n\nlog \"Starting video segment creation\"\nlog \"TTS Audio Path: $TTS_AUDIO_PATH\"\nlog \"Stock Video Source: $STOCK_VIDEO_URL_OR_PATH\"\nlog \"Output Path: $OUTPUT_VIDEO_SEGMENT_PATH\"\n\n# Validate input files\nif [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n    if [ \"$TTS_AUDIO_PATH\" == \"/tmp/dummy_audio_for_video_cut.wav\" ]; then\n        log \"Creating dummy audio file for testing\"\n        ffmpeg -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 5 -c:a pcm_s16le \"$TTS_AUDIO_PATH\" > /dev/null 2>&1\n    else\n        handle_error \"TTS audio file not found: $TTS_AUDIO_PATH\"\n    fi\nfi\n\n# Get audio duration\nlog \"Getting audio duration\"\nAUDIO_DURATION_SECONDS=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"$TTS_AUDIO_PATH\")\nif [ -z \"$AUDIO_DURATION_SECONDS\" ]; then\n    handle_error \"Could not get duration of audio file: $TTS_AUDIO_PATH\"\nfi\n\nlog \"Audio Duration: $AUDIO_DURATION_SECONDS seconds\"\n\n# Handle video source (URL or local path)\nVIDEO_SOURCE=\"$STOCK_VIDEO_URL_OR_PATH\"\nif [[ \"$STOCK_VIDEO_URL_OR_PATH\" == http* ]]; then\n    log \"Downloading stock video from URL\"\n    TEMP_STOCK_VIDEO=\"/tmp/temp_stock_video_$(date +%s).mp4\"\n    \n    # Download with retry logic\n    for attempt in {1..3}; do\n        log \"Download attempt $attempt/3\"\n        curl -L -s -o \"$TEMP_STOCK_VIDEO\" \"$STOCK_VIDEO_URL_OR_PATH\" --max-time 300\n        \n        if [ $? -eq 0 ] && [ -s \"$TEMP_STOCK_VIDEO\" ]; then\n            VIDEO_SOURCE=\"$TEMP_STOCK_VIDEO\"\n            log \"Video downloaded successfully\"\n            break\n        else\n            log \"Download failed, attempt $attempt\"\n            if [ $attempt -eq 3 ]; then\n                handle_error \"Failed to download stock video after 3 attempts\"\n            fi\n            sleep 2\n        fi\n    done\nfi\n\n# Get stock video duration\nlog \"Getting stock video duration\"\nSTOCK_VIDEO_DURATION_SECONDS=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"$VIDEO_SOURCE\")\nif [ -z \"$STOCK_VIDEO_DURATION_SECONDS\" ]; then\n    handle_error \"Could not get duration of stock video: $VIDEO_SOURCE\"\nfi\n\nlog \"Stock Video Duration: $STOCK_VIDEO_DURATION_SECONDS seconds\"\n\n# Calculate cutting parameters\nAUDIO_DURATION_INT=$(printf \"%.0f\" \"$AUDIO_DURATION_SECONDS\")\nSTOCK_VIDEO_DURATION_INT=$(printf \"%.0f\" \"$STOCK_VIDEO_DURATION_SECONDS\")\n\nif [ \"$AUDIO_DURATION_INT\" -ge \"$STOCK_VIDEO_DURATION_INT\" ]; then\n    log \"Warning: Audio duration ($AUDIO_DURATION_INT s) >= stock video duration ($STOCK_VIDEO_DURATION_INT s)\"\n    log \"Using full stock video\"\n    ffmpeg -i \"$VIDEO_SOURCE\" -c copy -y \"$OUTPUT_VIDEO_SEGMENT_PATH\" > /dev/null 2>&1\n    \n    if [ $? -ne 0 ]; then\n        handle_error \"Failed to copy full stock video\"\n    fi\nelse\n    MAX_START_TIME=$((STOCK_VIDEO_DURATION_INT - AUDIO_DURATION_INT))\n    RANDOM_START_SECONDS=$(shuf -i 0-\"$MAX_START_TIME\" -n 1)\n    \n    log \"Random start time: $RANDOM_START_SECONDS seconds\"\n    \n    # Cut video with fallback encoding\n    log \"Cutting video segment\"\n    ffmpeg -ss \"$RANDOM_START_SECONDS\" -i \"$VIDEO_SOURCE\" -t \"$AUDIO_DURATION_SECONDS\" -c:v copy -an -y \"$OUTPUT_VIDEO_SEGMENT_PATH\" > /dev/null 2>&1\n    \n    if [ $? -ne 0 ]; then\n        log \"Stream copy failed, attempting re-encode\"\n        ffmpeg -ss \"$RANDOM_START_SECONDS\" -i \"$VIDEO_SOURCE\" -t \"$AUDIO_DURATION_SECONDS\" -c:v libx264 -preset medium -an -y \"$OUTPUT_VIDEO_SEGMENT_PATH\" > /dev/null 2>&1\n        \n        if [ $? -ne 0 ]; then\n            handle_error \"Video cutting failed with both stream copy and re-encode\"\n        fi\n    fi\nfi\n\n# Validate output\nif [ ! -f \"$OUTPUT_VIDEO_SEGMENT_PATH\" ] || [ ! -s \"$OUTPUT_VIDEO_SEGMENT_PATH\" ]; then\n    handle_error \"Video segment output is missing or empty\"\nfi\n\nlog \"Video segment created successfully\"\necho \"$OUTPUT_VIDEO_SEGMENT_PATH\""
-      },
-      "name": "5. Cut Stock Video (FFmpeg)",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 2.1,
-      "position": [1750, 180],
-      "id": "cut-video",
-      "notes": "Production-ready video cutting with comprehensive error handling and retry logic.",
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "values": {
-          "string": [
-            {
-              "name": "videoSegmentPath",
-              "value": "={{ $json.output }}"
-            }
-          ]
-        },
-        "options": {
-          "keepOnlySet": false
-        }
-      },
-      "name": "5a. Set Video Segment Path",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [1950, 180],
-      "id": "set-video-segment-path",
-      "notes": "Adds videoSegmentPath to the JSON object."
-    },
-    {
-      "parameters": {
-        "command": "#!/bin/bash\n\n# Production-ready audio-video merge script\n\nset -euo pipefail\n\n# Configuration\nVIDEO_SEGMENT_PATH=\"{{ $json.videoSegmentPath || '/tmp/dummy_segment_for_merge.mp4' }}\"\nTTS_AUDIO_PATH=\"{{ $json.ttsAudioPath || '/tmp/dummy_audio_for_merge.wav' }}\"\nOUTPUT_FILENAME=\"final_video_$(date +%s).mp4\"\nOUTPUT_FINAL_VIDEO_PATH=\"/tmp/$OUTPUT_FILENAME\"\n\n# Logging function\nlog() {\n    echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $1\" >&2\n}\n\n# Error handling function\nhandle_error() {\n    log \"ERROR: $1\"\n    exit 1\n}\n\nlog \"Starting audio-video merge\"\nlog \"Video Segment Path: $VIDEO_SEGMENT_PATH\"\nlog \"TTS Audio Path: $TTS_AUDIO_PATH\"\nlog \"Output Path: $OUTPUT_FINAL_VIDEO_PATH\"\n\n# Create dummy files for testing if needed\nif [ \"$VIDEO_SEGMENT_PATH\" == \"/tmp/dummy_segment_for_merge.mp4\" ] && [ ! -f \"$VIDEO_SEGMENT_PATH\" ]; then\n    log \"Creating dummy video segment for testing\"\n    ffmpeg -f lavfi -i testsrc=duration=5:size=1280x720:rate=30 -c:v libx264 -an -y \"$VIDEO_SEGMENT_PATH\" > /dev/null 2>&1\nfi\n\nif [ \"$TTS_AUDIO_PATH\" == \"/tmp/dummy_audio_for_merge.wav\" ] && [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n    log \"Creating dummy audio for testing\"\n    ffmpeg -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 5 -c:a pcm_s16le -y \"$TTS_AUDIO_PATH\" > /dev/null 2>&1\nfi\n\n# Validate inputs\nif [ ! -f \"$VIDEO_SEGMENT_PATH\" ]; then\n    handle_error \"Video segment file not found: $VIDEO_SEGMENT_PATH\"\nfi\n\nif [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n    handle_error \"TTS audio file not found: $TTS_AUDIO_PATH\"\nfi\n\n# Merge with retry logic\nfor attempt in {1..3}; do\n    log \"Merge attempt $attempt/3\"\n    \n    ffmpeg -i \"$VIDEO_SEGMENT_PATH\" -i \"$TTS_AUDIO_PATH\" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest -y \"$OUTPUT_FINAL_VIDEO_PATH\" > /dev/null 2>&1\n    \n    if [ $? -eq 0 ] && [ -f \"$OUTPUT_FINAL_VIDEO_PATH\" ] && [ -s \"$OUTPUT_FINAL_VIDEO_PATH\" ]; then\n        log \"Audio-video merge successful\"\n        break\n    else\n        log \"Merge failed, attempt $attempt\"\n        if [ $attempt -eq 3 ]; then\n            handle_error \"Audio-video merge failed after 3 attempts\"\n        fi\n        sleep 2\n    fi\ndone\n\n# Validate output\nif [ ! -f \"$OUTPUT_FINAL_VIDEO_PATH\" ] || [ ! -s \"$OUTPUT_FINAL_VIDEO_PATH\" ]; then\n    handle_error \"Final video output is missing or empty\"\nfi\n\nlog \"Final video created successfully\"\necho \"$OUTPUT_FINAL_VIDEO_PATH\""
-      },
-      "name": "6. Merge Audio + Video (FFmpeg)",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 2.1,
-      "position": [2150, 180],
-      "id": "merge-audio-video",
-      "notes": "Production-ready audio-video merge with error handling and retry logic.",
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "values": {
-          "string": [
-            {
-              "name": "finalVideoPath",
-              "value": "={{ $json.output }}"
-            }
-          ]
-        },
-        "options": {
-          "keepOnlySet": false
-        }
-      },
-      "name": "6a. Set Final Video Path",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [2350, 180],
-      "id": "set-final-video-path",
-      "notes": "Adds finalVideoPath to the JSON object."
-    },
-    {
-      "parameters": {
-        "command": "#!/bin/bash\n\n# Production-ready Whisper transcription script\n\nset -euo pipefail\n\n# Configuration\nTTS_AUDIO_PATH=\"{{ $json.ttsAudioPath || '/tmp/dummy_audio_for_srt.wav' }}\"\nOUTPUT_SRT_FILENAME=\"subtitles_$(date +%s).srt\"\nOUTPUT_SRT_PATH=\"/tmp/$OUTPUT_SRT_FILENAME\"\n\nWHISPER_MODEL=\"{{ $parameter.whisperModel || 'base.en' }}\"\nWHISPER_IMPLEMENTATION=\"{{ $parameter.whisperImplementation || 'whispercpp' }}\"\n\n# Logging function\nlog() {\n    echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $1\" >&2\n}\n\n# Error handling function\nhandle_error() {\n    log \"ERROR: $1\"\n    exit 1\n}\n\nlog \"Starting audio transcription\"\nlog \"Audio Path: $TTS_AUDIO_PATH\"\nlog \"Whisper Model: $WHISPER_MODEL\"\nlog \"Implementation: $WHISPER_IMPLEMENTATION\"\nlog \"Output SRT Path: $OUTPUT_SRT_PATH\"\n\n# Create dummy audio if needed\nif [ \"$TTS_AUDIO_PATH\" == \"/tmp/dummy_audio_for_srt.wav\" ] && [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n    log \"Creating dummy audio file for testing\"\n    ffmpeg -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -t 5 -c:a pcm_s16le -y \"$TTS_AUDIO_PATH\" > /dev/null 2>&1\nfi\n\n# Validate input\nif [ ! -f \"$TTS_AUDIO_PATH\" ]; then\n    handle_error \"Audio file not found: $TTS_AUDIO_PATH\"\nfi\n\n# Transcription with retry logic\nfor attempt in {1..3}; do\n    log \"Transcription attempt $attempt/3\"\n    \n    case \"$WHISPER_IMPLEMENTATION\" in\n        \"openai_whisper\")\n            log \"Using OpenAI Whisper\"\n            # whisper \"$TTS_AUDIO_PATH\" --model \"$WHISPER_MODEL\" --output_format srt --output_dir \"$(dirname \"$OUTPUT_SRT_PATH\")\"\n            \n            # Simulation for template\n            cat > \"$OUTPUT_SRT_PATH\" << 'EOF'\n1\n00:00:01,000 --> 00:00:03,000\nThis is a sample subtitle from OpenAI Whisper.\n\n2\n00:00:03,000 --> 00:00:05,000\nTranscription would appear here in production.\nEOF\n            ;;\n        \"whispercpp\")\n            log \"Using whisper.cpp\"\n            # ./main -m /path/to/models/ggml-$WHISPER_MODEL.bin -f \"$TTS_AUDIO_PATH\" -osrt -of \"$(basename \"$OUTPUT_SRT_PATH\" .srt)\"\n            \n            # Simulation for template\n            cat > \"$OUTPUT_SRT_PATH\" << 'EOF'\n1\n00:00:01,000 --> 00:00:03,000\nThis is a sample subtitle from whisper.cpp.\n\n2\n00:00:03,000 --> 00:00:05,000\nTranscription would appear here in production.\nEOF\n            ;;\n        \"fasterwhisper\")\n            log \"Using faster-whisper\"\n            # python /path/to/faster_whisper_script.py --audio \"$TTS_AUDIO_PATH\" --model \"$WHISPER_MODEL\" --output_srt \"$OUTPUT_SRT_PATH\"\n            \n            # Simulation for template\n            cat > \"$OUTPUT_SRT_PATH\" << 'EOF'\n1\n00:00:01,000 --> 00:00:03,000\nThis is a sample subtitle from faster-whisper.\n\n2\n00:00:03,000 --> 00:00:05,000\nTranscription would appear here in production.\nEOF\n            ;;\n        *)\n            handle_error \"Unsupported Whisper implementation: $WHISPER_IMPLEMENTATION\"\n            ;;\n    esac\n    \n    if [ $? -eq 0 ] && [ -f \"$OUTPUT_SRT_PATH\" ] && [ -s \"$OUTPUT_SRT_PATH\" ]; then\n        log \"Transcription successful\"\n        break\n    else\n        log \"Transcription failed, attempt $attempt\"\n        if [ $attempt -eq 3 ]; then\n            handle_error \"Transcription failed after 3 attempts\"\n        fi\n        sleep 2\n    fi\ndone\n\n# Validate output\nif [ ! -f \"$OUTPUT_SRT_PATH\" ] || [ ! -s \"$OUTPUT_SRT_PATH\" ]; then\n    handle_error \"SRT output is missing or empty\"\nfi\n\nlog \"Transcription completed successfully\"\necho \"$OUTPUT_SRT_PATH\""
-      },
-      "name": "7a. Transcribe (Whisper) -> SRT",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 2.1,
-      "position": [2550, 180],
-      "id": "transcribe-audio",
-      "notes": "Production-ready Whisper transcription with error handling and retry logic.",
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "values": {
-          "string": [
-            {
-              "name": "srtPath",
-              "value": "={{ $json.output }}"
-            }
-          ]
-        },
-        "options": {
-          "keepOnlySet": false
-        }
-      },
-      "name": "7aa. Set SRT Path",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [2750, 180],
-      "id": "set-srt-path",
-      "notes": "Adds srtPath to the JSON object."
-    },
-    {
-      "parameters": {
-        "command": "#!/bin/bash\n\n# Production-ready subtitle burning script\n\nset -euo pipefail\n\n# Configuration\nFINAL_VIDEO_PATH=\"{{ $json.finalVideoPath || '/tmp/dummy_final_video_for_subs.mp4' }}\"\nSRT_PATH=\"{{ $json.srtPath || '/tmp/dummy_subtitles_for_burn.srt' }}\"\nOUTPUT_FILENAME=\"final_video_subs_$(date +%s).mp4\"\nOUTPUT_VIDEO_WITH_SUBS_PATH=\"/tmp/$OUTPUT_FILENAME\"\n\n# Subtitle styling\nSUBTITLE_STYLE=\"{{ $parameter.subtitleStyle || 'Fontname=Arial,Fontsize=16,PrimaryColour=&HFFFFFF,BorderStyle=1,Outline=1,BackColour=&H80000000,Shadow=0' }}\"\n\n# Logging function\nlog() {\n    echo \"[$(date '+%Y-%m-%d %H:%M:%S')] $1\" >&2\n}\n\n# Error handling function\nhandle_error() {\n    log \"ERROR: $1\"\n    exit 1\n}\n\nlog \"Starting subtitle burning\"\nlog \"Video Path: $FINAL_VIDEO_PATH\"\nlog \"SRT Path: $SRT_PATH\"\nlog \"Output Path: $OUTPUT_VIDEO_WITH_SUBS_PATH\"\nlog \"Subtitle Style: $SUBTITLE_STYLE\"\n\n# Create dummy files for testing if needed\nif [ \"$FINAL_VIDEO_PATH\" == \"/tmp/dummy_final_video_for_subs.mp4\" ] && [ ! -f \"$FINAL_VIDEO_PATH\" ]; then\n    log \"Creating dummy final video for testing\"\n    ffmpeg -f lavfi -i testsrc=duration=5:size=1280x720:rate=30 -c:v libx264 -y \"$FINAL_VIDEO_PATH\" > /dev/null 2>&1\nfi\n\nif [ \"$SRT_PATH\" == \"/tmp/dummy_subtitles_for_burn.srt\" ] && [ ! -f \"$SRT_PATH\" ]; then\n    log \"Creating dummy SRT for testing\"\n    cat > \"$SRT_PATH\" << 'EOF'\n1\n00:00:01,000 --> 00:00:03,000\nDummy subtitle for testing.\n\n2\n00:00:03,000 --> 00:00:05,000\nSecond subtitle line.\nEOF\nfi\n\n# Validate inputs\nif [ ! -f \"$FINAL_VIDEO_PATH\" ]; then\n    handle_error \"Final video file not found: $FINAL_VIDEO_PATH\"\nfi\n\nif [ ! -f \"$SRT_PATH\" ]; then\n    handle_error \"SRT file not found: $SRT_PATH\"\nfi\n\n# Burn subtitles with retry logic\nfor attempt in {1..3}; do\n    log \"Subtitle burning attempt $attempt/3\"\n    \n    ffmpeg -i \"$FINAL_VIDEO_PATH\" -vf \"subtitles='$SRT_PATH':force_style='${SUBTITLE_STYLE}'\" -c:v libx264 -crf 23 -preset medium -c:a copy -y \"$OUTPUT_VIDEO_WITH_SUBS_PATH\" > /dev/null 2>&1\n    \n    if [ $? -eq 0 ] && [ -f \"$OUTPUT_VIDEO_WITH_SUBS_PATH\" ] && [ -s \"$OUTPUT_VIDEO_WITH_SUBS_PATH\" ]; then\n        log \"Subtitle burning successful\"\n        break\n    else\n        log \"Subtitle burning failed, attempt $attempt\"\n        if [ $attempt -eq 3 ]; then\n            handle_error \"Subtitle burning failed after 3 attempts\"\n        fi\n        sleep 2\n    fi\ndone\n\n# Validate output\nif [ ! -f \"$OUTPUT_VIDEO_WITH_SUBS_PATH\" ] || [ ! -s \"$OUTPUT_VIDEO_WITH_SUBS_PATH\" ]; then\n    handle_error \"Video with subtitles output is missing or empty\"\nfi\n\nlog \"Subtitle burning completed successfully\"\necho \"$OUTPUT_VIDEO_WITH_SUBS_PATH\""
-      },
-      "name": "7b. Burn Subtitles (FFmpeg)",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 2.1,
-      "position": [2950, 180],
-      "id": "burn-subtitles",
-      "notes": "Production-ready subtitle burning with error handling and retry logic.",
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "values": {
-          "string": [
-            {
-              "name": "finalVideoWithSubsPath",
-              "value": "={{ $json.output }}"
-            }
-          ]
-        },
-        "options": {
-          "keepOnlySet": false
-        }
-      },
-      "name": "7ba. Set Final Video With Subs Path",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [3150, 180],
-      "id": "set-final-video-with-subs-path",
-      "notes": "Adds finalVideoWithSubsPath to the JSON object."
-    },
-    {
-      "parameters": {
-        "filePath": "={{ $json.finalVideoWithSubsPath }}",
-        "options": {
-          "encoding": "binaryBuffer"
-        }
-      },
-      "name": "Read Final Video File",
-      "type": "n8n-nodes-base.filesReadWrite",
-      "typeVersion": 1,
-      "position": [3350, 180],
-      "id": "read-final-video",
-      "notes": "Reads the final video file as binary data for upload to social media platforms."
-    },
-    {
-      "parameters": {
-        "authentication": "oAuth2",
-        "resource": "video",
-        "operation": "upload",
-        "title": "={{ $json.title || 'Faszinierende Reddit Geschichte' }}",
-        "description": "={{ ($json.optimizedText && $json.optimizedText.trim() !== '' ? $json.optimizedText : $json.originalSelftext).slice(0, 4950) }}",
-        "videoPrivacy": "={{ $parameter.youtubePrivacy || 'private' }}",
-        "tags": "={{ $parameter.youtubeTags || 'reddit,story,aita,shorts' }}",
-        "categoryId": "={{ $parameter.youtubeCategoryId || '24' }}",
-        "options": {
-          "notifySubscribers": false,
-          "inputBinaryField": "data",
-          "fileName": "={{ ($json.title || 'reddit_story').replace(/[^a-zA-Z0-9_]/g, '_').slice(0,100) }}_{{ Date.now() }}.mp4"
-        }
-      },
-      "name": "8. Upload to YouTube",
-      "type": "n8n-nodes-base.youTube",
-      "typeVersion": 1.1,
-      "position": [3550, 180],
-      "id": "upload-youtube",
-      "notes": "Uploads the final video to YouTube with production-ready error handling.",
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "url": "https://open.tiktokapis.com/v2/video/upload/",
-        "options": {
-          "continueOnFail": true
-        },
-        "sendHeaders": true,
-        "headers": [
-          {
-            "name": "Authorization",
-            "value": "Bearer {{ $credential.tiktokApiAccessToken }}"
-          },
-          {
-            "name": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "sendBody": true,
+        "url": "http://localhost:11434/api/generate",
         "requestMethod": "POST",
-        "bodyParameters": "={{ JSON.stringify({\n  video_url: $json.publicVideoUrl,\n  title: $json.title || 'Interessante Reddit Geschichte',\n  description: ($json.optimizedText || $json.originalSelftext).slice(0, 1000),\n  tags: ['reddit', 'story', 'viral'],\n  privacy: 'public'\n}) }}",
-        "responseFormat": "json"
-      },
-      "name": "9. Upload to TikTok",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [3550, 380],
-      "id": "upload-tiktok",
-      "notes": "Production-ready TikTok upload with proper error handling and authentication.",
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "url": "https://graph.facebook.com/v18.0/{{ $credential.instagramAccountId }}/media",
+        "jsonParameters": true,
         "options": {
-          "continueOnFail": true
+          "followRedirect": false
         },
-        "sendHeaders": true,
-        "headers": [
-          {
-            "name": "Authorization",
-            "value": "Bearer {{ $credential.instagramAccessToken }}"
-          },
-          {
-            "name": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "sendBody": true,
-        "requestMethod": "POST",
-        "bodyParameters": "={{ JSON.stringify({\n  media_type: 'REELS',\n  video_url: $json.publicVideoUrl,\n  caption: `${ ($json.title || 'Interessante Geschichte!') }\\n\\n${ ($json.optimizedText || $json.originalSelftext).slice(0,2000) }\\n\\n#reddit #story #reels #viral`,\n  share_to_feed: true\n}) }}",
-        "responseFormat": "json"
+        "bodyParametersJson": "{\"model\":\"mistral:instruct\",\"prompt\":\"Schreibe den folgenden Reddit-Post als spannende Kurzgeschichte um:\\n{{$json.text}}\",\"stream\":false}"
       },
-      "name": "10. Upload to Instagram Reels",
+      "id": "Rewrite with LLM",
+      "name": "Rewrite with LLM",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.1,
-      "position": [3550, 580],
-      "id": "upload-instagram",
-      "notes": "Production-ready Instagram Reels upload with proper error handling and authentication.",
-      "continueOnFail": true
+      "position": [800, 200],
+      "typeVersion": 2
     },
     {
       "parameters": {
-        "content": "## Production Error Handling\n\n**Global Error Handling:**\n- All nodes have `continueOnFail: true` set\n- Scripts include comprehensive error handling\n- Retry logic implemented for critical operations\n- Proper logging with timestamps\n\n**Monitoring:**\n- All operations logged with timestamps\n- Error messages captured and logged\n- File validation at each step\n\n**Cleanup:**\n- Temporary files cleaned up automatically\n- Download cleanup on script exit\n- Resource management implemented\n\n**Security:**\n- Input validation in all scripts\n- Proper credential management\n- No hardcoded secrets"
+        "command": "python3",
+        "arguments": [
+          "/home/user/voicegen.py",
+          "={{$json.response}}"
+        ],
+        "workingDirectory": ""
       },
-      "name": "Production Notes",
+      "id": "Generate Voice",
+      "name": "Generate Voice",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [1000, 200],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "command": "ffmpeg",
+        "arguments": [
+          "-i",
+          "/home/user/videos/minecraft.mp4",
+          "-i",
+          "/tmp/output.mp3",
+          "-shortest",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
+          "-y",
+          "/tmp/final_video.mp4"
+        ],
+        "workingDirectory": ""
+      },
+      "id": "Merge Video",
+      "name": "Merge Video",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [1200, 200],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "command": "whisper",
+        "arguments": [
+          "/tmp/output.mp3",
+          "--model",
+          "medium",
+          "--output_format",
+          "srt",
+          "--output_dir",
+          "/tmp"
+        ],
+        "workingDirectory": ""
+      },
+      "id": "Create SRT",
+      "name": "Create SRT",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [1400, 200],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "command": "ffmpeg",
+        "arguments": [
+          "-i",
+          "/tmp/final_video.mp4",
+          "-vf",
+          "subtitles=/tmp/output.srt",
+          "-c:a",
+          "copy",
+          "-y",
+          "/tmp/final_video_sub.mp4"
+        ],
+        "workingDirectory": ""
+      },
+      "id": "Burn Subs",
+      "name": "Burn Subs",
+      "type": "n8n-nodes-base.executeCommand",
+      "position": [1600, 200],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "filePath": "/tmp/final_video_sub.mp4"
+      },
+      "id": "Read Video",
+      "name": "Read Video",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "position": [1800, 200],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "operation": "uploadVideo",
+        "binaryProperty": "data",
+        "title": "={{$node[\"Extract Text\"].json[\"title\"]}}",
+        "description": "Automatisch generierte Story-Shorts"
+      },
+      "id": "YouTube Upload",
+      "name": "YouTube Upload",
+      "type": "n8n-nodes-base.youtube",
+      "credentials": {
+        "youtubeOAuth2Api": {
+          "id": "YOUR_YT_CREDENTIAL_ID",
+          "name": "YouTube-Account"
+        }
+      },
+      "position": [2000, 200],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "note": "TikTok Upload hier einf\u00fcgen – entweder Community Node oder HTTP Request mit Content Posting API."
+      },
+      "id": "TikTok Placeholder",
+      "name": "TikTok Placeholder",
       "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [3750, 50],
-      "id": "production-notes",
-      "color": {
-        "r": 0,
-        "g": 255,
-        "b": 0
-      }
+      "position": [2200, 200],
+      "typeVersion": 1
     }
   ],
   "connections": {
-    "Start": {
+    "Cron": {
       "main": [
         [
           {
-            "node": "1. Reddit Scraper",
+            "node": "Fetch Reddit",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "1. Reddit Scraper": {
+    "Fetch Reddit": {
       "main": [
         [
           {
-            "node": "2. Filter Posts",
+            "node": "Extract Text",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "2. Filter Posts": {
+    "Extract Text": {
       "main": [
         [
           {
-            "node": "2a. Select First Matching Post",
+            "node": "Rewrite with LLM",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "2a. Select First Matching Post": {
+    "Rewrite with LLM": {
       "main": [
         [
           {
-            "node": "3. LLM Text Optimierung (Ollama)",
+            "node": "Generate Voice",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "3. LLM Text Optimierung (Ollama)": {
+    "Generate Voice": {
       "main": [
         [
           {
-            "node": "3a. Extract Optimized Text",
+            "node": "Merge Video",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "3a. Extract Optimized Text": {
+    "Merge Video": {
       "main": [
         [
           {
-            "node": "4. Text-to-Speech (TTS)",
+            "node": "Create SRT",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "4. Text-to-Speech (TTS)": {
+    "Create SRT": {
       "main": [
         [
           {
-            "node": "4a. Set TTS Output Path",
+            "node": "Burn Subs",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "4a. Set TTS Output Path": {
+    "Burn Subs": {
       "main": [
         [
           {
-            "node": "5. Cut Stock Video (FFmpeg)",
+            "node": "Read Video",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "5. Cut Stock Video (FFmpeg)": {
+    "Read Video": {
       "main": [
         [
           {
-            "node": "5a. Set Video Segment Path",
+            "node": "YouTube Upload",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "5a. Set Video Segment Path": {
-      "main": [
-        [
+          },
           {
-            "node": "6. Merge Audio + Video (FFmpeg)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "6. Merge Audio + Video (FFmpeg)": {
-      "main": [
-        [
-          {
-            "node": "6a. Set Final Video Path",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "6a. Set Final Video Path": {
-      "main": [
-        [
-          {
-            "node": "7a. Transcribe (Whisper) -> SRT",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "7a. Transcribe (Whisper) -> SRT": {
-      "main": [
-        [
-          {
-            "node": "7aa. Set SRT Path",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "7aa. Set SRT Path": {
-      "main": [
-        [
-          {
-            "node": "7b. Burn Subtitles (FFmpeg)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "7b. Burn Subtitles (FFmpeg)": {
-      "main": [
-        [
-          {
-            "node": "7ba. Set Final Video With Subs Path",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "7ba. Set Final Video With Subs Path": {
-      "main": [
-        [
-          {
-            "node": "Read Final Video File",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Read Final Video File": {
-      "main": [
-        [
-          {
-            "node": "8. Upload to YouTube",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "9. Upload to TikTok",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "10. Upload to Instagram Reels",
+            "node": "TikTok Placeholder",
             "type": "main",
             "index": 0
           }
@@ -624,23 +288,9 @@
       ]
     }
   },
-  "pinData": {},
   "active": false,
   "settings": {
-    "executionOrder": "V1",
-    "errorWorkflow": {
-      "errorWorkflowId": "{{ $parameter.errorWorkflowId }}"
-    },
-    "timezone": "Europe/Berlin",
-    "saveDataErrorExecution": "all",
-    "saveDataSuccessExecution": "all",
-    "saveManualExecutions": true,
-    "callerPolicy": "workflowsFromSameOwner",
-    "executionTimeout": 3600
+    "timezone": "Europe/Berlin"
   },
-  "versionId": "production-v1.0.0",
-  "meta": {
-    "templateCredsSetupCompleted": true,
-    "instanceId": "production-instance"
-  }
+  "versionId": "1"
 }
